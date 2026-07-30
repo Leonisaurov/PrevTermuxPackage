@@ -38,6 +38,11 @@ on:
         options:
           - fast
           - full
+      zram:
+        description: "Enable ZRAM (16GB) for heavy builds (zig, rust, llvm)"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build:
@@ -50,12 +55,7 @@ jobs:
       release_tag: ${{ steps.generate_tag.outputs.release_tag }}
 
     steps:
-      # ── 1. Checkout del repo actual (PrevTermuxPackage) ──
-      # Necesario para que gh sepa en qué repo crear releases
-      - name: Checkout current repo
-        uses: actions/checkout@v4
-
-      # ── 2. Checkout de termux-packages en el commit exacto ──
+      # ── 1. Checkout de termux-packages en el commit exacto ──
       - name: Checkout termux-packages
         uses: actions/checkout@v4
         with:
@@ -63,7 +63,21 @@ jobs:
           ref: ${{ inputs.git_ref }}
           path: termux-packages
 
-      # ── 3. Extraer versión del paquete ──
+      # ── ZRAM: 16GB de RAM comprimida para builds pesados ──
+      - name: Setup ZRAM
+        if: ${{ inputs.zram }}
+        shell: bash
+        run: |
+          echo "Setting up 16GB ZRAM for heavy build..."
+          sudo swapoff -a 2>/dev/null || true
+          sudo modprobe zram 2>/dev/null || true
+          echo "16G" | sudo tee /sys/block/zram0/disksize 2>/dev/null || true
+          sudo mkswap /dev/zram0 2>/dev/null || true
+          sudo swapon -p 5 /dev/zram0 2>/dev/null || true
+          echo "ZRAM enabled:"
+          free -h
+
+      # ── 2. Extraer versión del paquete ──
       - name: Extract package version
         id: get_version
         shell: bash
@@ -156,7 +170,7 @@ jobs:
           echo "package_version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Extracted version: ${VERSION}"
 
-      # ── 4. Compilar el paquete ──
+      # ── 3. Compilar el paquete ──
       - name: Build package (via run-docker.sh)
         shell: bash
         working-directory: termux-packages
@@ -175,7 +189,7 @@ jobs:
               -I ${{ inputs.package_name }}
           fi
 
-      # ── 5. Subir artifact (antes de crear release, por si algo falla) ──
+      # ── 4. Subir artifact (antes de crear release, por si algo falla) ──
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -183,7 +197,7 @@ jobs:
           path: termux-packages/output/*.pkg.tar.*
           if-no-files-found: error
 
-      # ── 6. Generar tag para el release ──
+      # ── 5. Generar tag para el release ──
       - name: Generate release tag
         id: generate_tag
         shell: bash
@@ -196,7 +210,7 @@ jobs:
           echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Generated tag: ${TAG}"
 
-      # ── 7. Crear GitHub Release (solo si no existe ya) ──
+      # ── 6. Crear GitHub Release (solo si no existe ya) ──
       - name: Create GitHub Release
         shell: bash
         env:

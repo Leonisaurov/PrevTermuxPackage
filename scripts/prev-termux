@@ -218,6 +218,7 @@ cmd_build() {
     local package=""
     local commit_sha=""
     local refresh=0
+    local zram=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -231,6 +232,7 @@ cmd_build() {
                 shift
                 ;;
             --refresh) refresh=1; shift ;;
+            --zram) zram=true; shift ;;
             -*)
                 die "Unknown argument: $1"
                 ;;
@@ -245,7 +247,7 @@ cmd_build() {
         esac
     done
 
-    [[ -z "$package" ]] && die "Usage: prev-termux build <package> [--commit <sha>] [--refresh]"
+    [[ -z "$package" ]] && die "Usage: prev-termux build <package> [--commit <sha>] [--refresh] [--zram]"
 
     local version="" sha="" date="" short_sha=""
 
@@ -316,10 +318,16 @@ cmd_build() {
             info "Ensuring workflow is enabled..."
             gh workflow enable "$WORKFLOW_FILE" -R "$RELEASE_REPO" 2>/dev/null || true
 
+            local gh_flags=()
+            if [[ "$zram" == "true" ]]; then
+                gh_flags+=(-f zram=true)
+            fi
+
             local workflow_output
             workflow_output="$(gh workflow run "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
                 --ref "$WORKFLOW_REF" \
-                -f package_name="$package" -f git_ref="$sha" 2>&1)" || {
+                -f package_name="$package" -f git_ref="$sha" \
+                "${gh_flags[@]}" 2>&1)" || {
                 err "Failed to trigger workflow: ${workflow_output}"
                 echo ""
                 info "Possible solutions:"
@@ -609,11 +617,12 @@ ${BOLD}Commands:${NC}
       package. Displays version, commit SHA, and date.
       --refresh   Force re-discovery, ignoring cache
 
-  build <package> [--commit <sha>] [--refresh]
+  build <package> [--commit <sha>] [--refresh] [--zram]
       Interactive mode: pick a version via fzf, then either download an
       existing release or trigger the GHA build workflow.
       --commit <sha>  Direct mode: skip fzf, build the exact commit SHA.
       --refresh       Force re-discovery, ignoring cache
+      --zram          Enable 16GB ZRAM for heavy builds (zig, rust, llvm)
 
   subinstall [<file.pkg.tar.xz>]
       Extract a .pkg.tar.xz to ~/.local/opt/<pkg>-<version>/
@@ -641,6 +650,7 @@ ${BOLD}Examples:${NC}
   prev-termux build nodejs
   prev-termux build libfoo --commit a1b2c3d
   prev-termux build nodejs --refresh
+  prev-termux build zig --commit a1b2c3d --zram
   prev-termux subinstall
   prev-termux subinstall ./output/bat-0.24.0-0-aarch64.pkg.tar.xz
   prev-termux cache info
@@ -706,7 +716,7 @@ main() {
             cmd_list "$@"
             ;;
         build)
-            [[ $# -lt 1 ]] && die "Usage: prev-termux build <package> [--commit <sha>] [--refresh]"
+            [[ $# -lt 1 ]] && die "Usage: prev-termux build <package> [--commit <sha>] [--refresh] [--zram]"
             cmd_build "$@"
             ;;
         subinstall)
