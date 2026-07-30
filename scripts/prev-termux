@@ -516,16 +516,17 @@ cmd_status() {
         raw="$filtered"
     fi
 
-    echo ""
+    echo "  STATUS  PACKAGE                  TIME"
+    echo "  ──────────────────────────────────────────────"
     # Un solo jq que procesa TODO y genera el output formateado
     echo "$raw" | jq -r '
         def icon:
-            if .conclusion == "success" then "✅"
-            elif .conclusion == "failure" then "❌"
-            elif .conclusion == "cancelled" then "⏹️"
-            elif .conclusion == "skipped" then "⏭️"
-            elif .status == "in_progress" or .conclusion == null then "🔄"
-            else "❓"
+            if .conclusion == "success" then "PASS  "
+            elif .conclusion == "failure" then "FAIL  "
+            elif .conclusion == "cancelled" then "STOP  "
+            elif .conclusion == "skipped" then "SKIP  "
+            elif .status == "in_progress" or .conclusion == null then "RUN   "
+            else "?     "
             end;
         def elapsed:
             if .createdAt then
@@ -540,7 +541,7 @@ cmd_status() {
             else "-"
             end;
         def trunc: .[0:22] + if length > 22 then "…" else "" end;
-        .[] | "  \(icon)    \(.displayTitle | trunc)   \(elapsed)"
+        .[] | "  \(icon) \(.displayTitle | trunc)     \(elapsed)"
     '
 
     echo ""
