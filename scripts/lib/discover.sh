@@ -300,8 +300,8 @@ discover_versions() {
 
 
 # ─── resolve_version_from_buildsh ───────────────────────────────────────────────
-# Resuelve variables tipo ${VAR} o $VAR en una línea de versión usando
-# las definiciones del build.sh.
+# Resuelve variables tipo ${VAR}, $VAR y ${VAR%pattern} en TERMUX_PKG_VERSION
+# usando las definiciones del build.sh.
 #
 # Uso: resolve_version_from_buildsh <version_raw> <build_sh_content>
 #
@@ -314,44 +314,107 @@ discover_versions() {
 #   0 — Éxito
 #   1 — No se pudieron resolver todas las variables
 #
+# Funciona en 3 fases:
+#   Fase 1: Extraer TODAS las definiciones del build.sh en un array asociativo
+#   Fase 2: Resolver TERMUX_PKG_VERSION primero (debe tener valor literal)
+#   Fase 3: Resolver variables derivadas con ${VAR%pattern}
+#
 resolve_version_from_buildsh() {
     local version_raw="$1"
     local build_sh="$2"
-    local resolved="$version_raw"
-    local max_iter=10
+    local max_iter=20
     local iter=0
 
-    # Quitar comillas
-    resolved=$(echo "$resolved" | tr -d '"' | tr -d "'")
-
-    # Resolver ${VAR} (con llaves)
-    while [[ "$resolved" =~ \$\{([a-zA-Z_][a-zA-Z0-9_]*)\} ]] && [[ $iter -lt $max_iter ]]; do
-        local var_name="${BASH_REMATCH[1]}"
-        local var_value
-        var_value=$(echo "$build_sh" | grep "^${var_name}=" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d ' ')
-        if [[ -n "$var_value" ]]; then
-            resolved="${resolved//\$\{${var_name}\}/${var_value}}"
-        else
-            break
+    # ── Fase 1: Extraer TODAS las definiciones del build.sh ──
+    declare -A vars
+    local name value
+    while IFS='=' read -r name value; do
+        name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [[ -n "$name" && "$name" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+            vars["$name"]="$value"
         fi
+    done < <(echo "$build_sh" | grep -oP '^\s*[a-zA-Z_][a-zA-Z0-9_]*=.*' | head -100)
+
+    # Limpiar comillas del valor inicial
+    local resolved="${version_raw//\"/}"
+    resolved="${resolved//\'/}"
+
+    # ── Fase 2+3: Resolver iterativamente ──
+    while [[ $iter -lt $max_iter ]]; do
+        local matched=0
+
+        # ── Intentar ${VAR%pattern} o ${VAR} (con llaves y posible operación) ──
+        if [[ "$resolved" =~ \$\{([a-zA-Z_][a-zA-Z0-9_]*)([#%]?[^}]*)?\} ]]; then
+            local full_match="${BASH_REMATCH[0]}"
+            local var_name="${BASH_REMATCH[1]}"
+            local var_op="${BASH_REMATCH[2]:-}"
+            local var_value="${vars[$var_name]:-}"
+
+            if [[ -n "$var_value" ]]; then
+                # Limpiar comillas del valor
+                var_value="${var_value//\"/}"
+                var_value="${var_value//\'/}"
+
+                # Si el valor contiene otra variable (${...}), resolverla primero
+                if [[ "$var_value" =~ \$\{([a-zA-Z_][a-zA-Z0-9_]*)([#%]?[^}]*)?\} ]]; then
+                    local inner_var="${BASH_REMATCH[1]}"
+                    local inner_op="${BASH_REMATCH[2]:-}"
+                    local inner_val="${vars[$inner_var]:-}"
+                    inner_val="${inner_val//\"/}"
+                    inner_val="${inner_val//\'/}"
+
+                    if [[ -n "$inner_val" ]]; then
+                        # Aplicar operación de bash: % (sufijo), %% (sufijo largo)
+                        case "$inner_op" in
+                            %.*)
+                                inner_val="${inner_val%${inner_op#%}}"
+                                ;;
+                            %%.*)
+                                inner_val="${inner_val%%${inner_op#%%}}"
+                                ;;
+                        esac
+                        var_value="${var_value//\$\{${inner_var}${inner_op}\}/${inner_val}}"
+                    fi
+                fi
+
+                # Aplicar la operación externa (de la referencia original)
+                case "$var_op" in
+                    %.*)
+                        var_value="${var_value%${var_op#%}}"
+                        ;;
+                    %%.*)
+                        var_value="${var_value%%${var_op#%%}}"
+                        ;;
+                esac
+
+                resolved="${resolved//${full_match}/${var_value}}"
+                matched=1
+            fi
+        fi
+
+        # ── Si no se encontró ${...}, intentar $VAR sin llaves ──
+        if [[ $matched -eq 0 && "$resolved" =~ \$([a-zA-Z_][a-zA-Z0-9_]*) ]]; then
+            # Asegurar que no sea parte de ${VAR}
+            if [[ "${BASH_REMATCH[0]}" != \$\{* ]]; then
+                local var_name="${BASH_REMATCH[1]}"
+                local var_value="${vars[$var_name]:-}"
+
+                if [[ -n "$var_value" ]]; then
+                    var_value="${var_value//\"/}"
+                    var_value="${var_value//\'/}"
+                    resolved="${resolved//\$"${var_name}"/${var_value}}"
+                    matched=1
+                fi
+            fi
+        fi
+
+        # Si no se resolvió nada en esta iteración, salir
+        [[ $matched -eq 0 ]] && break
         ((iter++))
     done
 
-    # Resolver $VAR (sin llaves)
-    while [[ "$resolved" =~ \$([a-zA-Z_][a-zA-Z0-9_]*) ]] && [[ $iter -lt $max_iter ]]; do
-        local var_name="${BASH_REMATCH[1]}"
-        local var_value
-        var_value=$(echo "$build_sh" | grep "^${var_name}=" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d ' ')
-        if [[ -n "$var_value" ]]; then
-            resolved="${resolved//\$${var_name}/${var_value}}"
-        else
-            break
-        fi
-        ((iter++))
-    done
-
-    # Si después de resolver siguen apareciendo variables (no se pudieron resolver),
-    # devolvemos error
+    # Verificar si quedaron variables sin resolver
     if [[ "$resolved" =~ \$\{?[a-zA-Z_] ]]; then
         return 1
     fi
