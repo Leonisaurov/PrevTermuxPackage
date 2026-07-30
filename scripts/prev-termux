@@ -411,23 +411,44 @@ cmd_build() {
 #
 cmd_subinstall() {
     local target_file=""
+    local pkg_filter=""
 
-    # Si pasaron un archivo directo
-    if [[ -n "${1:-}" && -f "${1:-}" ]]; then
-        target_file="${1:-}"
-    else
-        # Buscar archivos en output/
+    # Si pasaron un argumento
+    if [[ -n "${1:-}" ]]; then
+        # Si es un archivo existente, usarlo directo
+        if [[ -f "$1" ]]; then
+            target_file="$1"
+        else
+            # Es un nombre de paquete
+            pkg_filter="$1"
+        fi
+    fi
+
+    # Si no es archivo directo, buscar en output/
+    if [[ -z "$target_file" ]]; then
         local output_dir="${PWD}/output"
         if [[ ! -d "$output_dir" ]]; then
             die "No output/ directory found. Build a package first: ./scripts/prev-termux build <package>"
         fi
 
+        # Construir patrón de búsqueda
+        local search_pattern
+        if [[ -n "$pkg_filter" ]]; then
+            search_pattern="${output_dir}/${pkg_filter}-*.pkg.tar.*"
+        else
+            search_pattern="${output_dir}/*.pkg.tar.*"
+        fi
+
         shopt -s nullglob
-        local files=("$output_dir"/*.pkg.tar.*)
+        local files=($search_pattern)
         shopt -u nullglob
 
         if [[ ${#files[@]} -eq 0 ]]; then
-            die "No .pkg.tar.* files found in ${output_dir}. Build a package first: ./scripts/prev-termux build <package>"
+            if [[ -n "$pkg_filter" ]]; then
+                die "No .pkg.tar.* files found for '${pkg_filter}' in ${output_dir}. Build it first: ./scripts/prev-termux build ${pkg_filter}"
+            else
+                die "No .pkg.tar.* files found in ${output_dir}. Build a package first: ./scripts/prev-termux build <package>"
+            fi
         fi
 
         # Siempre mostrar en fzf para seleccionar
@@ -624,10 +645,12 @@ ${BOLD}Commands:${NC}
       --refresh       Force re-discovery, ignoring cache
       --heavy         Optimize for heavy builds: ZRAM 16GB + free disk space
 
-  subinstall [<file.pkg.tar.xz>]
+  subinstall [<package>|<file.pkg.tar.xz>]
       Extract a .pkg.tar.xz to ~/.local/opt/<pkg>-<version>/
       Creates versioned symlinks in ~/.local/bin/<bin>-<version>
-      If no file is given, shows all artifacts in output/ via fzf
+      If no argument is given, shows all artifacts in output/ via fzf.
+      If a package name is given, filters artifacts by that package.
+      If a .pkg.tar.xz file is given, extracts it directly.
       Never uses pacman -U — purely local extraction
 
   status [<package>]
@@ -720,7 +743,7 @@ main() {
             cmd_build "$@"
             ;;
         subinstall)
-            [[ $# -gt 1 ]] && die "Usage: prev-termux subinstall [<file.pkg.tar.xz>]"
+            [[ $# -gt 1 ]] && die "Usage: prev-termux subinstall [<package>|<file.pkg.tar.xz>]"
             cmd_subinstall "$@"
             ;;
         status)
