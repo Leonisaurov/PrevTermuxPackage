@@ -40,7 +40,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: ghcr.io/termux/termux-packages:latest
+    container: ghcr.io/termux/package-builder:latest
     permissions:
       contents: write
     outputs:
