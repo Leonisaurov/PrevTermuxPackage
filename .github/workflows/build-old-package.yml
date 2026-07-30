@@ -1,20 +1,21 @@
 name: 📦 Build Old Termux Package
 
 on:
-  push: {}                # ← AGREGADO: activa el workflow en GitHub Actions al hacer push
-  pull_request: {}        # ← AGREGADO: activa el workflow en PRs
+  push: {}
+  pull_request: {}
   workflow_dispatch:
     inputs:
       package_name:
-        description: "Nombre del paquete (ej: bash, python)"
+        description: "Package name (e.g., bash, python, nodejs)"
         required: true
         type: string
       git_ref:
-        description: Commit SHA exacto de termux-packages
+        description: "Commit SHA exacto de termux-packages"
         required: true
         type: string
       architecture:
-        description: Arquitectura destino
+        description: "Target architecture"
+        required: false
         default: aarch64
         type: choice
         options:
@@ -23,14 +24,16 @@ on:
           - i686
           - x86_64
       format:
-        description: Formato de empaquetado
+        description: "Package format"
+        required: false
         default: pacman
         type: choice
         options:
           - pacman
           - debian
       build_mode:
-        description: Modo de compilación (fast=-I, full=-F)
+        description: "Dependency resolution mode"
+        required: false
         default: fast
         type: choice
         options:
@@ -40,7 +43,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: ghcr.io/termux/package-builder:latest
     permissions:
       contents: write
     outputs:
@@ -58,8 +60,9 @@ jobs:
       - name: Extract package version
         id: get_version
         shell: bash
+        working-directory: termux-packages
         run: |
-          PACKAGE_DIR="termux-packages/packages/${{ inputs.package_name }}"
+          PACKAGE_DIR="packages/${{ inputs.package_name }}"
           if [ ! -f "$PACKAGE_DIR/build.sh" ]; then
             echo "Error: build.sh not found for package '${{ inputs.package_name }}'"
             echo "Expected path: $PACKAGE_DIR/build.sh"
@@ -73,19 +76,19 @@ jobs:
           echo "package_version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Extracted version: ${VERSION}"
 
-      - name: Build package
+      - name: Build package (via run-docker.sh)
         shell: bash
         working-directory: termux-packages
         run: |
           if [ "${{ inputs.build_mode }}" = "full" ]; then
             echo "Running full build (-F) for ${{ inputs.package_name }}..."
-            ./build-package.sh \
+            ./scripts/run-docker.sh ./build-package.sh \
               --format ${{ inputs.format }} \
               -a ${{ inputs.architecture }} \
               -F ${{ inputs.package_name }}
           else
             echo "Running fast build (-I) for ${{ inputs.package_name }}..."
-            ./build-package.sh \
+            ./scripts/run-docker.sh ./build-package.sh \
               --format ${{ inputs.format }} \
               -a ${{ inputs.architecture }} \
               -I ${{ inputs.package_name }}
@@ -95,9 +98,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${{ inputs.architecture }}
-          path: |
-            termux-packages/output/*.pkg.tar.*
-            termux-packages/output/*.deb
+          path: termux-packages/output/*.pkg.tar.*
           if-no-files-found: error
 
       - name: Generate release tag
@@ -121,11 +122,12 @@ jobs:
             echo "Release '$TAG' already exists. Skipping creation."
           else
             PACKAGE_VERSION="${{ steps.get_version.outputs.package_version }}"
-            NOTES="Package: ${{ inputs.package_name }}
-            Version: ${PACKAGE_VERSION}
-            Architecture: ${{ inputs.architecture }}
-            Format: ${{ inputs.format }}
-            Commit: ${{ inputs.git_ref }}"
+            printf -v NOTES 'Package: %s\nVersion: %s\nArchitecture: %s\nFormat: %s\nCommit: %s' \
+              "${{ inputs.package_name }}" \
+              "${PACKAGE_VERSION}" \
+              "${{ inputs.architecture }}" \
+              "${{ inputs.format }}" \
+              "${{ inputs.git_ref }}"
 
             shopt -s nullglob
             FILES=(termux-packages/output/*.pkg.tar.* termux-packages/output/*.deb)
