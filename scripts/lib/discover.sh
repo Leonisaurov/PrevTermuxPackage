@@ -268,7 +268,7 @@ discover_versions() {
             grep "^TERMUX_PKG_VERSION=" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '"' | tr -d ' ' || true)"
 
         if [[ -n "$version" ]]; then
-            results+=("${version}|${commit_hash}|${commit_date}|${commit_short}")
+            results+=("${version}|${commit_hash}|${commit_date}|${commit_hash:0:7}")
         fi
     done
 
