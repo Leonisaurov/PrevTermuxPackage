@@ -1,0 +1,140 @@
+name: 📦 Build Old Termux Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: Nombre del paquete (ej: bash, python)
+        required: true
+        type: string
+      git_ref:
+        description: Commit SHA exacto de termux-packages
+        required: true
+        type: string
+      architecture:
+        description: Arquitectura destino
+        default: aarch64
+        type: choice
+        options:
+          - aarch64
+          - arm
+          - i686
+          - x86_64
+      format:
+        description: Formato de empaquetado
+        default: pacman
+        type: choice
+        options:
+          - pacman
+          - debian
+      build_mode:
+        description: Modo de compilación (fast=-I, full=-F)
+        default: fast
+        type: choice
+        options:
+          - fast
+          - full
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: ghcr.io/termux/termux-packages:latest
+    permissions:
+      contents: write
+    outputs:
+      package_version: ${{ steps.get_version.outputs.package_version }}
+      release_tag: ${{ steps.generate_tag.outputs.release_tag }}
+
+    steps:
+      - name: Checkout termux-packages
+        uses: actions/checkout@v4
+        with:
+          repository: termux/termux-packages
+          ref: ${{ inputs.git_ref }}
+          path: termux-packages
+
+      - name: Extract package version
+        id: get_version
+        shell: bash
+        run: |
+          PACKAGE_DIR="termux-packages/packages/${{ inputs.package_name }}"
+          if [ ! -f "$PACKAGE_DIR/build.sh" ]; then
+            echo "Error: build.sh not found for package '${{ inputs.package_name }}'"
+            echo "Expected path: $PACKAGE_DIR/build.sh"
+            exit 1
+          fi
+          VERSION=$(grep -oP '^TERMUX_PKG_VERSION=\K.+' "$PACKAGE_DIR/build.sh" | head -1)
+          if [ -z "$VERSION" ]; then
+            echo "Error: could not extract TERMUX_PKG_VERSION from $PACKAGE_DIR/build.sh"
+            exit 1
+          fi
+          echo "package_version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Extracted version: ${VERSION}"
+
+      - name: Build package
+        shell: bash
+        working-directory: termux-packages
+        run: |
+          if [ "${{ inputs.build_mode }}" = "full" ]; then
+            echo "Running full build (-F) for ${{ inputs.package_name }}..."
+            ./build-package.sh \
+              --format ${{ inputs.format }} \
+              -a ${{ inputs.architecture }} \
+              -F ${{ inputs.package_name }}
+          else
+            echo "Running fast build (-I) for ${{ inputs.package_name }}..."
+            ./build-package.sh \
+              --format ${{ inputs.format }} \
+              -a ${{ inputs.architecture }} \
+              -I ${{ inputs.package_name }}
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${{ inputs.architecture }}
+          path: |
+            termux-packages/output/*.pkg.tar.*
+            termux-packages/output/*.deb
+          if-no-files-found: error
+
+      - name: Generate release tag
+        id: generate_tag
+        shell: bash
+        run: |
+          SHA7="${{ inputs.git_ref }}"
+          SHA7="${SHA7:0:7}"
+          TAG="${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${SHA7}"
+          echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Generated tag: ${TAG}"
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.generate_tag.outputs.release_tag }}"
+
+          if gh release view "$TAG" &>/dev/null; then
+            echo "Release '$TAG' already exists. Skipping creation."
+          else
+            PACKAGE_VERSION="${{ steps.get_version.outputs.package_version }}"
+            NOTES="Package: ${{ inputs.package_name }}
+        Version: ${PACKAGE_VERSION}
+        Architecture: ${{ inputs.architecture }}
+        Format: ${{ inputs.format }}
+        Commit: ${{ inputs.git_ref }}"
+
+            shopt -s nullglob
+            FILES=(termux-packages/output/*.pkg.tar.* termux-packages/output/*.deb)
+
+            if [ ${#FILES[@]} -gt 0 ]; then
+              echo "Creating release '$TAG' with ${#FILES[@]} artifact(s)..."
+              gh release create "$TAG" "${FILES[@]}" \
+                --notes "$NOTES"
+            else
+              echo "Warning: No package files found to attach."
+              gh release create "$TAG" \
+                --notes "$NOTES"
+            fi
+          fi

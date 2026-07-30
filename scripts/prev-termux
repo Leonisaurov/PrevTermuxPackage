@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+# ============================================================
+# prev-termux — CLI for building old Termux package versions
+# via GitHub Actions releases.
+#
+# Dependencies: git, fzf, gh (GitHub CLI), jq
+# ============================================================
+set -euo pipefail
+
+# ─── Configuration ───────────────────────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/lib"
+
+# GitHub repository where releases and the build workflow live.
+# Auto-detected from `gh repo view`; override via GITHUB_REPOSITORY env var.
+RELEASE_REPO="${GITHUB_REPOSITORY:-}"
+if [[ -z "$RELEASE_REPO" ]] && command -v gh &>/dev/null; then
+    RELEASE_REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
+fi
+
+readonly WORKFLOW_FILE="build-old-package.yml"
+readonly WORKFLOW_REF="main"
+
+# ─── Source discover library (required) ─────────────────────────────────────────
+
+if [[ ! -f "$LIB_DIR/discover.sh" ]]; then
+    echo "[ERROR] Required library not found: $LIB_DIR/discover.sh" >&2
+    exit 1
+fi
+# shellcheck source=/dev/null
+source "$LIB_DIR/discover.sh"
+
+# Source optional build library (if present)
+if [[ -f "$LIB_DIR/build.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$LIB_DIR/build.sh"
+fi
+
+# ─── Colors ──────────────────────────────────────────────────────────────────────
+
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly BOLD='\033[1m'
+readonly NC='\033[0m'
+
+# ─── Logging Helpers ─────────────────────────────────────────────────────────────
+
+info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
+ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+die()   { err "$*"; exit 1; }
+
+# ─── Dependency Check ────────────────────────────────────────────────────────────
+
+check_deps() {
+    local missing=()
+    for cmd in git fzf gh jq; do
+        command -v "$cmd" &>/dev/null || missing+=("$cmd")
+    done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        die "Missing required dependencies: ${missing[*]}
+Install them with:
+  pkg install ${missing[*]}"
+    fi
+
+    info "Checking GitHub CLI authentication..."
+    if ! gh auth status &>/dev/null; then
+        gh auth status 2>&1 || true
+        die "gh is not authenticated. Run 'gh auth login' first."
+    fi
+    ok "GitHub CLI authenticated"
+
+    if [[ -z "$RELEASE_REPO" ]]; then
+        die "Could not determine the GitHub repository.
+  • Set GITHUB_REPOSITORY env var, e.g.:
+      export GITHUB_REPOSITORY=your-org/PrevTermuxPackage
+  • Or run 'gh repo set-default' inside a git clone of your repository"
+    fi
+    ok "Release repository: ${RELEASE_REPO}"
+}
+
+# ─── Command: list ───────────────────────────────────────────────────────────────
+# Usage: prev-termux list <package>
+#
+# Discovers all historical versions of a Termux package, presents them
+# in an interactive fzf selector, and prints the selected version details.
+#
+cmd_list() {
+    local package="$1"
+
+    info "Discovering versions for '${package}'..."
+    echo ""
+
+    local selected
+    selected="$(fzf_select "$package")" || die "Version selection cancelled or failed"
+    [[ -z "$selected" ]] && die "No version selected"
+
+    # Parse: version|commit_full|date|commit_short
+    local version sha date short_sha
+    IFS='|' read -r version sha date short_sha <<< "$selected"
+
+    echo ""
+    info "Selected version for ${package}:"
+    echo -e "  ${BOLD}Version${NC}   ${version}"
+    echo -e "  ${BOLD}Commit${NC}    ${sha}"
+    echo -e "  ${BOLD}Date${NC}      ${date}"
+}
+
+# ─── Command: build ──────────────────────────────────────────────────────────────
+# Usage: prev-termux build <package> [--commit <sha>]
+#
+# Interactive mode (default): uses fzf to pick a version, then either downloads
+#   the existing release or triggers a GHA workflow to build it.
+# Direct mode (--commit): skips fzf, uses the provided commit SHA directly.
+#
+cmd_build() {
+    local package="$1"
+    local commit_sha=""
+    shift
+
+    # Parse optional --commit flag (must come before any positional args)
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --commit)
+                [[ -z "${2:-}" ]] && die "--commit requires a SHA argument"
+                commit_sha="$2"
+                shift 2
+                ;;
+            --commit=*)
+                commit_sha="${1#*=}"
+                shift
+                ;;
+            *)
+                die "Unknown argument: $1"
+                ;;
+        esac
+    done
+
+    local version="" sha="" date="" short_sha=""
+
+    # ── Resolve version & commit SHA ──────────────────────────────────────────
+
+    if [[ -n "$commit_sha" ]]; then
+        # ── Direct mode ───────────────────────────────────────────────────────
+        info "Using commit: ${commit_sha}"
+        sha="$commit_sha"
+        short_sha="${sha:0:7}"
+
+        # extract_version is provided by discover.sh
+        version="$(extract_version "$sha" "$package")" || \
+            die "Failed to extract version for commit ${sha} package ${package}"
+        date="N/A"
+        ok "Version: ${version} (from commit ${short_sha})"
+    else
+        # ── Interactive mode ──────────────────────────────────────────────────
+        info "Discovering versions for '${package}'..."
+        echo ""
+
+        local selected
+        selected="$(fzf_select "$package")" || die "Version selection cancelled or failed"
+        [[ -z "$selected" ]] && die "No version selected"
+
+        IFS='|' read -r version sha date short_sha <<< "$selected"
+        ok "Selected: ${version} (${short_sha})"
+    fi
+
+    # ── Build tag ─────────────────────────────────────────────────────────────
+    # Sanitize: remove spaces, replace non-alphanumeric characters (except ._-)
+    local tag_raw="${package}-${version}-${short_sha}"
+    local tag
+    tag="$(echo "$tag_raw" | tr -d ' ' | sed 's/[^a-zA-Z0-9._-]/-/g')"
+
+    echo ""
+    info "Build summary:"
+    echo -e "  ${BOLD}Package${NC}   ${package}"
+    echo -e "  ${BOLD}Version${NC}   ${version}"
+    echo -e "  ${BOLD}Commit${NC}    ${sha}"
+    echo -e "  ${BOLD}Date${NC}      ${date}"
+    echo -e "  ${BOLD}Tag${NC}       ${tag}"
+    echo ""
+
+    # ── Check / Download / Trigger ────────────────────────────────────────────
+
+    info "Checking for existing release..."
+    if gh release view "$tag" -R "$RELEASE_REPO" &>/dev/null; then
+        ok "Release '${tag}' already exists!"
+        echo ""
+        info "Downloading artifacts..."
+        mkdir -p "${PWD}/output"
+
+        if gh release download "$tag" -R "$RELEASE_REPO" \
+            --pattern "*.pkg.tar.xz" --dir "${PWD}/output" 2>/dev/null; then
+            ok "Artifacts downloaded to ${PWD}/output/"
+        else
+            warn "No .pkg.tar.xz files found; downloading all assets..."
+            gh release download "$tag" -R "$RELEASE_REPO" --dir "${PWD}/output"
+            ok "All assets downloaded to ${PWD}/output/"
+        fi
+
+        echo ""
+        ls -lh "${PWD}/output/" 2>/dev/null | grep -v '^total' || true
+    else
+        info "No existing release found. Triggering build workflow..."
+        echo ""
+
+        if ! gh workflow run "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
+            --ref "$WORKFLOW_REF" \
+            -f package_name="$package" -f git_ref="$sha"; then
+            die "Failed to trigger workflow.
+  Check that '${WORKFLOW_FILE}' exists in ${RELEASE_REPO}
+  and that you have write permissions."
+        fi
+
+        echo ""
+        info "Workflow dispatched! Waiting for run ID..."
+        sleep 5
+
+        local run_id=""
+        run_id="$(gh run list --workflow "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
+            --json databaseId --jq '.[0].databaseId' --limit 1 2>/dev/null)" || true
+
+        if [[ -n "$run_id" ]]; then
+            ok "Workflow started: #${run_id}"
+            echo ""
+            echo -e "  ${BOLD}Monitor:${NC}  gh run watch ${run_id} -R ${RELEASE_REPO}"
+            echo -e "  ${BOLD}Status:${NC}   prev-termux status"
+            echo -e "  ${BOLD}URL:${NC}      https://github.com/${RELEASE_REPO}/actions/runs/${run_id}"
+        else
+            warn "Could not retrieve run ID. Check status manually:"
+            echo -e "  ${BOLD}  gh run list --workflow ${WORKFLOW_FILE} -R ${RELEASE_REPO}${NC}"
+            echo -e "  ${BOLD}  prev-termux status${NC}"
+        fi
+    fi
+}
+
+# ─── Command: status ─────────────────────────────────────────────────────────────
+# Usage: prev-termux status
+#
+# Shows the 10 most recent workflow runs for the build pipeline.
+#
+cmd_status() {
+    if [[ -z "$RELEASE_REPO" ]]; then
+        die "Release repository not set.
+  Set GITHUB_REPOSITORY env var or use 'gh repo set-default'."
+    fi
+
+    info "Recent workflow runs for '${WORKFLOW_FILE}' in ${RELEASE_REPO}"
+    echo ""
+
+    if ! gh run list --workflow "$WORKFLOW_FILE" -R "$RELEASE_REPO" --limit 10 2>/dev/null; then
+        warn "No workflow runs found, or workflow '${WORKFLOW_FILE}' does not exist."
+        echo ""
+        info "Available workflows in ${RELEASE_REPO}:"
+        if ! gh workflow list -R "$RELEASE_REPO" 2>/dev/null; then
+            die "Cannot access repository ${RELEASE_REPO}. Check permissions."
+        fi
+    fi
+}
+
+# ─── Command: help ───────────────────────────────────────────────────────────────
+
+cmd_help() {
+    cat <<EOF
+${BOLD}Usage:${NC} prev-termux <command> [options]
+
+${BOLD}Commands:${NC}
+
+  list <package>
+      Discover and interactively select a historical version of a Termux
+      package. Displays version, commit SHA, and date.
+
+  build <package>
+      Interactive mode: pick a version via fzf, then either download an
+      existing release or trigger the GHA build workflow.
+
+  build <package> --commit <sha>
+      Direct mode: skip fzf, build (or download) the exact commit SHA.
+
+  status
+      Show the 10 most recent runs of the build workflow.
+
+  help
+      Show this help message.
+
+${BOLD}Examples:${NC}
+
+  prev-termux list python
+  prev-termux build nodejs
+  prev-termux build libfoo --commit a1b2c3d
+  prev-termux status
+
+${BOLD}Environment:${NC}
+
+  GITHUB_REPOSITORY   GitHub repository (owner/name) where releases
+                      and the build workflow live.
+                      Auto-detected when run inside a git clone.
+
+${BOLD}Requirements:${NC}
+
+  git, fzf, gh (GitHub CLI), jq
+  All available via: pkg install git fzf gh jq
+
+${BOLD}Library dependencies:${NC}
+
+  scripts/lib/discover.sh  (required — provides discover_versions,
+                            extract_version, and fzf_select)
+  scripts/lib/build.sh     (optional — loaded if present)
+EOF
+}
+
+# ─── Main Dispatch ───────────────────────────────────────────────────────────────
+
+main() {
+    if [[ $# -eq 0 ]]; then
+        cmd_help
+        exit 0
+    fi
+
+    local command="$1"
+    shift
+
+    # help and version commands bypass dependency checks
+    case "$command" in
+        help|--help|-h)
+            cmd_help
+            exit 0
+            ;;
+    esac
+
+    # All other commands require dependencies
+    check_deps
+
+    case "$command" in
+        list)
+            [[ $# -lt 1 ]] && die "Usage: prev-termux list <package>"
+            cmd_list "$1"
+            ;;
+        build)
+            [[ $# -lt 1 ]] && die "Usage: prev-termux build <package> [--commit <sha>]"
+            cmd_build "$@"
+            ;;
+        status)
+            cmd_status
+            ;;
+        *)
+            err "Unknown command: ${command}"
+            cmd_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
