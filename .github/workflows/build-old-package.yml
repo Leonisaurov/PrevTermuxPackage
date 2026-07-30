@@ -2,8 +2,6 @@ name: 📦 Build Old Termux Package
 run-name: 📦 ${{ inputs.package_name }} @ ${{ inputs.git_ref }}
 
 on:
-  push: {}
-  pull_request: {}
   workflow_dispatch:
     inputs:
       package_name:
