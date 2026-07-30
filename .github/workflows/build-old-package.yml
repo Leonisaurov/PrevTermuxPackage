@@ -69,7 +69,7 @@ jobs:
             echo "Expected path: $PACKAGE_DIR/build.sh"
             exit 1
           fi
-          VERSION=$(grep -oP '^TERMUX_PKG_VERSION=\K.+' "$PACKAGE_DIR/build.sh" | head -1)
+          VERSION=$(grep -oP '^TERMUX_PKG_VERSION=\K.+' "$PACKAGE_DIR/build.sh" | head -1 | tr -d '"' | tr -d "'" | tr -d ' ')
           if [ -z "$VERSION" ]; then
             echo "Error: could not extract TERMUX_PKG_VERSION from $PACKAGE_DIR/build.sh"
             exit 1
@@ -108,7 +108,10 @@ jobs:
         run: |
           SHA7="${{ inputs.git_ref }}"
           SHA7="${SHA7:0:7}"
-          TAG="${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${SHA7}"
+          # Sanitizar: quitar comillas y espacios por si acaso
+          SAFE_VERSION="${{ steps.get_version.outputs.package_version }}"
+          SAFE_VERSION=$(echo "$SAFE_VERSION" | tr -d '"' | tr -d "'" | tr -d ' ')
+          TAG="${{ inputs.package_name }}-${SAFE_VERSION}-${SHA7}"
           echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Generated tag: ${TAG}"
 
