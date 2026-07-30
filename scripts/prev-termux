@@ -405,8 +405,8 @@ cmd_subinstall() {
     local target_file=""
 
     # Si pasaron un archivo directo
-    if [[ -n "$1" && -f "$1" ]]; then
-        target_file="$1"
+    if [[ -n "${1:-}" && -f "${1:-}" ]]; then
+        target_file="${1:-}"
     else
         # Buscar archivos en output/
         local output_dir="${PWD}/output"
@@ -427,30 +427,37 @@ cmd_subinstall() {
             die "fzf is not installed. Install with: pkg install fzf"
         fi
 
-        # Construir entradas "nombre_corto|path_completo" para fzf
-        local entries=()
-        local f
+        # Construir mapping nombre_corto → path_completo + symlinks para preview
+        local -A name_to_path
+        local short_names=()
+        local preview_dir
+        preview_dir="$(mktemp -d "${TMPDIR}/prev-termux.XXXXXX")"
+
+        local f base_name short_name
         for f in "${files[@]}"; do
-            local base_name
             base_name=$(basename "$f")
             # Extraer pkg-version del filename
             # Formato: <pkg>-<version>-<revision>-<arch>.pkg.tar.xz
-            local short_name
             short_name=$(echo "$base_name" | sed -E 's/^([a-zA-Z_-]+-[0-9]+(\.[0-9]+)*).*/\1/')
-            entries+=("${short_name}|${f}")
+            name_to_path["$short_name"]="$f"
+            short_names+=("$short_name")
+            # Symlink para preview (nombre_corto → path_completo)
+            ln -sf "$f" "${preview_dir}/${short_name}" 2>/dev/null || true
         done
 
-        local selected_line
-        selected_line="$(printf '%s\n' "${entries[@]}" | fzf \
-            --delimiter='\|' \
-            --with-nth='1' \
+        # Mostrar solo nombres cortos en fzf con preview via symlinks
+        local selected_name
+        selected_name="$(printf '%s\n' "${short_names[@]}" | fzf \
             --prompt='Select package to install: ' \
-            --preview 'tar -tzf {2} 2>/dev/null | head -20' \
+            --preview "tar -tzf '${preview_dir}/{}' 2>/dev/null | head -20" \
             --preview-window='right:60%' \
             2>/dev/null)" || die "No file selected"
 
-        # Extraer path completo desde el campo 2
-        target_file=$(echo "$selected_line" | cut -d'|' -f2)
+        # Obtener path completo desde el mapping
+        target_file="${name_to_path[$selected_name]}"
+
+        # Limpiar directorio temporal
+        rm -rf "$preview_dir"
     fi
 
     # Extraer nombre del paquete y versión del nombre del archivo
