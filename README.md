@@ -76,11 +76,11 @@ fzf (selector interactivo + preview build.sh)
 
 | Comando | Descripción |
 |---------|-------------|
-| `./scripts/prev-termux list <package>` | Lista versiones disponibles con fzf |
-| `./scripts/prev-termux build <package>` | Selecciona versión con fzf y descarga o dispara build |
-| `./scripts/prev-termux build <package> --commit <sha>` | Build directo sin fzf |
+| `./scripts/prev-termux list <package> [--refresh]` | Lista versiones disponibles con fzf. `--refresh` fuerza redescubrimiento |
+| `./scripts/prev-termux build <package> [--refresh]` | Selecciona versión con fzf y descarga o dispara build. `--refresh` fuerza redescubrimiento |
+| `./scripts/prev-termux build <package> --commit <sha>` | Build directo sin fzf usando un commit SHA específico |
 | `./scripts/prev-termux subinstall [<file>]` | Extrae .pkg.tar.xz a `~/.local/opt/` con symlinks versionados |
-| `./scripts/prev-termux status` | Muestra estado de builds recientes |
+| `./scripts/prev-termux status [<package>]` | Muestra últimos 20 runs con indicadores de color: ✓ verde (success), ✗ rojo (failure), * amarillo (in progress), - gris (skipped), ○ gris (cancelled). Filtra por paquete si se especifica |
 | `./scripts/prev-termux cache info` | Estadísticas del caché persistente (tamaño, edad, paquetes) |
 | `./scripts/prev-termux cache clear [<package>]` | Limpia caché de un paquete (o todos si sin argumento) |
 | `./scripts/prev-termux cache clear --all` | Limpia caché completo (incluyendo repo bare) |
@@ -118,10 +118,24 @@ Omite el selector `fzf` y usa el commit SHA directamente para identificar la ver
 ### Ver estado de builds recientes
 
 ```bash
+# Todos los últimos 20 runs
 ./scripts/prev-termux status
+
+# Filtrados por paquete
+./scripts/prev-termux status python
 ```
 
-Muestra los workflows disparados recientemente, su estado (pendiente, en curso, completado, fallido) y enlaces al release si está disponible.
+Muestra los últimos 20 runs del workflow con indicadores de color:
+
+| Indicador | Color | Estado |
+|-----------|-------|--------|
+| `✓` | Verde | Success |
+| `✗` | Rojo | Failure |
+| `*` | Amarillo | In progress |
+| `-` | Gris | Skipped |
+| `○` | Gris | Cancelled |
+
+Si se especifica un nombre de paquete, filtra los runs que lo contengan (case-insensitive).
 
 ### Subinstall (extracción portable, sin pacman)
 
@@ -179,7 +193,7 @@ Esto asegura que cada versión única tenga un tag único y el script local pued
 
 ## Workflow GHA (`build-old-package.yml`)
 
-El workflow se dispara mediante `workflow_dispatch` (o automáticamente en `push`/`pull_request`, aunque la build real solo corre en `workflow_dispatch`) y acepta los siguientes inputs:
+El workflow se dispara exclusivamente mediante `workflow_dispatch` (trigger manual desde la UI de GitHub o mediante `gh workflow run`) y acepta los siguientes inputs:
 
 | Input | Descripción | Valor por defecto |
 |-------|-------------|-------------------|

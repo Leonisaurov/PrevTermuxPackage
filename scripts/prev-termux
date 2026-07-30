@@ -648,12 +648,17 @@ ${BOLD}Examples:${NC}
   prev-termux cache clear python
   prev-termux cache clear --all
   prev-termux status
+  prev-termux status zig
 
 ${BOLD}Environment:${NC}
 
   GITHUB_REPOSITORY   GitHub repository (owner/name) where releases
                       and the build workflow live.
                       Auto-detected when run inside a git clone.
+
+  PREV_TERMUX_CACHE_DIR   Cache directory (default: ~/.cache/prev-termux)
+  PREV_TERMUX_INSTALL_DIR Install directory for 'subinstall' (default: ~/.local/opt)
+  PREV_TERMUX_BIN_DIR     Symlink directory for 'subinstall' (default: ~/.local/bin)
 
 ${BOLD}Requirements:${NC}
 
