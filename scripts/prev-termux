@@ -372,7 +372,7 @@ cmd_build() {
         if [[ ${#LOCAL_FILES[@]} -gt 0 && -f "${LOCAL_FILES[0]}" ]]; then
             ok "Artifact already downloaded:"
             echo ""
-            ls -lh "${PWD}/output/"*.pkg.tar.* 2>/dev/null
+            ls -lh "${PWD}/output/${package}-"*.pkg.tar.* 2>/dev/null
             echo ""
             info "Run this to install:"
             echo "  pacman -U ${PWD}/output/$(basename "${LOCAL_FILES[0]}")"
