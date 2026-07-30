@@ -442,7 +442,7 @@ cmd_subinstall() {
 
         local selected_line
         selected_line="$(printf '%s\n' "${entries[@]}" | fzf \
-            --delimiter='|' \
+            --delimiter='\|' \
             --with-nth='1' \
             --prompt='Select package to install: ' \
             --preview 'tar -tzf {2} 2>/dev/null | head -20' \
