@@ -427,14 +427,30 @@ cmd_subinstall() {
             die "fzf is not installed. Install with: pkg install fzf"
         fi
 
-        local selected
-        selected="$(printf '%s\n' "${files[@]}" | fzf \
+        # Construir entradas "nombre_corto|path_completo" para fzf
+        local entries=()
+        local f
+        for f in "${files[@]}"; do
+            local base_name
+            base_name=$(basename "$f")
+            # Extraer pkg-version del filename
+            # Formato: <pkg>-<version>-<revision>-<arch>.pkg.tar.xz
+            local short_name
+            short_name=$(echo "$base_name" | sed -E 's/^([a-zA-Z_-]+-[0-9]+(\.[0-9]+)*).*/\1/')
+            entries+=("${short_name}|${f}")
+        done
+
+        local selected_line
+        selected_line="$(printf '%s\n' "${entries[@]}" | fzf \
+            --delimiter='|' \
+            --with-nth='1' \
             --prompt='Select package to install: ' \
-            --preview 'tar -tzf {} 2>/dev/null | head -20' \
+            --preview 'tar -tzf {2} 2>/dev/null | head -20' \
             --preview-window='right:60%' \
             2>/dev/null)" || die "No file selected"
 
-        target_file="$selected"
+        # Extraer path completo desde el campo 2
+        target_file=$(echo "$selected_line" | cut -d'|' -f2)
     fi
 
     # Extraer nombre del paquete y versión del nombre del archivo
