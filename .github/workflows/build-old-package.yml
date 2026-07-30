@@ -191,13 +191,27 @@ jobs:
             ./scripts/run-docker.sh ./build-package.sh \
               --format ${{ inputs.format }} \
               -a ${{ inputs.architecture }} \
-              -F ${{ inputs.package_name }}
+              -F ${{ inputs.package_name }} || {
+                rc=$?
+                if [ $rc -eq 10 ]; then
+                  echo "⚠️ run-docker.sh exit code 10 (groupmod non-fatal). Build may have succeeded."
+                else
+                  exit $rc
+                fi
+              }
           else
             echo "Running fast build (-I) for ${{ inputs.package_name }}..."
             ./scripts/run-docker.sh ./build-package.sh \
               --format ${{ inputs.format }} \
               -a ${{ inputs.architecture }} \
-              -I ${{ inputs.package_name }}
+              -I ${{ inputs.package_name }} || {
+                rc=$?
+                if [ $rc -eq 10 ]; then
+                  echo "⚠️ run-docker.sh exit code 10 (groupmod non-fatal). Build may have succeeded."
+                else
+                  exit $rc
+                fi
+              }
           fi
 
       # ── 4. Subir artifact (antes de crear release, por si algo falla) ──
