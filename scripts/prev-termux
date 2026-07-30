@@ -449,7 +449,7 @@ cmd_subinstall() {
         local selected_name
         selected_name="$(printf '%s\n' "${short_names[@]}" | fzf \
             --prompt='Select package to install: ' \
-            --preview "tar -tzf '${preview_dir}/{}' 2>/dev/null | head -20" \
+            --preview "tar -tf '${preview_dir}/{}' 2>/dev/null | head -20" \
             --preview-window='right:60%' \
             2>/dev/null)" || die "No file selected"
 
