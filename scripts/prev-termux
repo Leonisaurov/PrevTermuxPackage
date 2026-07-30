@@ -529,7 +529,7 @@ cmd_status() {
             end;
         def elapsed:
             if .createdAt then
-                ((if .status == "completed" and .updatedAt then .updatedAt else now end) - (.createdAt | fromdateiso8601)) as $sec
+                ((if .status == "completed" and .updatedAt then (.updatedAt | fromdateiso8601) else now end) - (.createdAt | fromdateiso8601)) as $sec
                 | if $sec < 0 then "-"
                   else
                     (($sec / 3600 | floor) | tostring) as $h
@@ -540,8 +540,8 @@ cmd_status() {
             else "-"
             end;
         def trunc: .[0:22] + if length > 22 then "…" else "" end;
-        "  \(icon)    \(.displayTitle | trunc)   \(elapsed)"
-    ' 2>/dev/null
+        .[] | "  \(icon)    \(.displayTitle | trunc)   \(elapsed)"
+    '
 
     echo ""
     info "Run: prev-termux status <package> to filter"
