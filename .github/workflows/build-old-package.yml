@@ -51,6 +51,12 @@ jobs:
       release_tag: ${{ steps.generate_tag.outputs.release_tag }}
 
     steps:
+      # ── 1. Checkout del repo actual (PrevTermuxPackage) ──
+      # Necesario para que gh sepa en qué repo crear releases
+      - name: Checkout current repo
+        uses: actions/checkout@v4
+
+      # ── 2. Checkout de termux-packages en el commit exacto ──
       - name: Checkout termux-packages
         uses: actions/checkout@v4
         with:
@@ -58,6 +64,7 @@ jobs:
           ref: ${{ inputs.git_ref }}
           path: termux-packages
 
+      # ── 3. Extraer versión del paquete ──
       - name: Extract package version
         id: get_version
         shell: bash
@@ -77,6 +84,7 @@ jobs:
           echo "package_version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Extracted version: ${VERSION}"
 
+      # ── 4. Compilar el paquete ──
       - name: Build package (via run-docker.sh)
         shell: bash
         working-directory: termux-packages
@@ -95,6 +103,7 @@ jobs:
               -I ${{ inputs.package_name }}
           fi
 
+      # ── 5. Subir artifact (antes de crear release, por si algo falla) ──
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -102,27 +111,30 @@ jobs:
           path: termux-packages/output/*.pkg.tar.*
           if-no-files-found: error
 
+      # ── 6. Generar tag para el release ──
       - name: Generate release tag
         id: generate_tag
         shell: bash
         run: |
           SHA7="${{ inputs.git_ref }}"
           SHA7="${SHA7:0:7}"
-          # Sanitizar: quitar comillas y espacios por si acaso
           SAFE_VERSION="${{ steps.get_version.outputs.package_version }}"
           SAFE_VERSION=$(echo "$SAFE_VERSION" | tr -d '"' | tr -d "'" | tr -d ' ')
           TAG="${{ inputs.package_name }}-${SAFE_VERSION}-${SHA7}"
           echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Generated tag: ${TAG}"
 
+      # ── 7. Crear GitHub Release (solo si no existe ya) ──
       - name: Create GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          REPO="${{ github.repository }}"
           TAG="${{ steps.generate_tag.outputs.release_tag }}"
 
-          if gh release view "$TAG" &>/dev/null; then
+          # Verificar si el release ya existe
+          if gh release view "$TAG" -R "$REPO" &>/dev/null; then
             echo "Release '$TAG' already exists. Skipping creation."
           else
             PACKAGE_VERSION="${{ steps.get_version.outputs.package_version }}"
@@ -134,15 +146,17 @@ jobs:
               "${{ inputs.git_ref }}"
 
             shopt -s nullglob
-            FILES=(termux-packages/output/*.pkg.tar.* termux-packages/output/*.deb)
+            FILES=("${GITHUB_WORKSPACE}/termux-packages/output/"*.pkg.tar.* "${GITHUB_WORKSPACE}/termux-packages/output/"*.deb)
 
             if [ ${#FILES[@]} -gt 0 ]; then
               echo "Creating release '$TAG' with ${#FILES[@]} artifact(s)..."
               gh release create "$TAG" "${FILES[@]}" \
+                -R "$REPO" \
                 --notes "$NOTES"
             else
               echo "Warning: No package files found to attach."
               gh release create "$TAG" \
+                -R "$REPO" \
                 --notes "$NOTES"
             fi
           fi
