@@ -71,16 +71,43 @@ jobs:
         working-directory: termux-packages
         run: |
           PACKAGE_DIR="packages/${{ inputs.package_name }}"
-          if [ ! -f "$PACKAGE_DIR/build.sh" ]; then
+          BUILD_SH="$PACKAGE_DIR/build.sh"
+          if [ ! -f "$BUILD_SH" ]; then
             echo "Error: build.sh not found for package '${{ inputs.package_name }}'"
-            echo "Expected path: $PACKAGE_DIR/build.sh"
+            echo "Expected path: $BUILD_SH"
             exit 1
           fi
-          VERSION=$(grep -oP '^TERMUX_PKG_VERSION=\K.+' "$PACKAGE_DIR/build.sh" | head -1 | tr -d '"' | tr -d "'" | tr -d ' ')
-          if [ -z "$VERSION" ]; then
-            echo "Error: could not extract TERMUX_PKG_VERSION from $PACKAGE_DIR/build.sh"
+
+          # Extraer línea cruda de TERMUX_PKG_VERSION
+          VERSION_RAW=$(grep -oP '^TERMUX_PKG_VERSION=\K.+' "$BUILD_SH" | head -1)
+          if [ -z "$VERSION_RAW" ]; then
+            echo "Error: could not extract TERMUX_PKG_VERSION from $BUILD_SH"
             exit 1
           fi
+
+          # Resolver variables ${VAR} y $VAR usando las definiciones del build.sh
+          VERSION="$VERSION_RAW"
+          # Quitar comillas
+          VERSION=$(echo "$VERSION" | tr -d '"' | tr -d "'")
+
+          # Resolver ${VAR} con llaves (máximo 10 iteraciones)
+          for i in $(seq 1 10); do
+            VAR_NAME=$(echo "$VERSION" | grep -oP '\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}' | head -1 | grep -oP '[a-zA-Z_][a-zA-Z0-9_]*' || true)
+            [ -z "$VAR_NAME" ] && break
+            VAR_VALUE=$(grep "^${VAR_NAME}=" "$BUILD_SH" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d ' ')
+            [ -z "$VAR_VALUE" ] && break
+            VERSION="${VERSION//\$\{${VAR_NAME}\}/${VAR_VALUE}}"
+          done
+
+          # Resolver $VAR sin llaves (máximo 10 iteraciones)
+          for i in $(seq 1 10); do
+            VAR_NAME=$(echo "$VERSION" | grep -oP '(?<!\$)\$([a-zA-Z_][a-zA-Z0-9_]*)' | head -1 | grep -oP '[a-zA-Z_][a-zA-Z0-9_]*' || true)
+            [ -z "$VAR_NAME" ] && break
+            VAR_VALUE=$(grep "^${VAR_NAME}=" "$BUILD_SH" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d ' ')
+            [ -z "$VAR_VALUE" ] && break
+            VERSION="${VERSION//\$${VAR_NAME}/${VAR_VALUE}}"
+          done
+
           echo "package_version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Extracted version: ${VERSION}"
 

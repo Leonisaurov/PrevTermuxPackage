@@ -263,12 +263,16 @@ discover_versions() {
         local commit_short="${rest#*|}"
 
         # Extraer versión del build.sh en ese commit
+        local build_sh_for_version
+        build_sh_for_version="$(git -C "$repo_dir" show "${commit_hash}:packages/${pkg}/build.sh" 2>/dev/null || true)"
+        local version_raw
+        version_raw="$(echo "$build_sh_for_version" | grep "^TERMUX_PKG_VERSION=" | head -1 | cut -d= -f2 || true)"
         local version
-        version="$(git -C "$repo_dir" show "${commit_hash}:packages/${pkg}/build.sh" 2>/dev/null | \
-            grep "^TERMUX_PKG_VERSION=" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '"' | tr -d ' ' || true)"
-
-        if [[ -n "$version" ]]; then
-            results+=("${version}|${commit_hash}|${commit_date}|${commit_hash:0:7}")
+        if [[ -n "$version_raw" ]]; then
+            version="$(resolve_version_from_buildsh "$version_raw" "$build_sh_for_version")" || version="$version_raw"
+            if [[ -n "$version" ]]; then
+                results+=("${version}|${commit_hash}|${commit_date}|${commit_hash:0:7}")
+            fi
         fi
     done
 
@@ -291,6 +295,68 @@ discover_versions() {
     # ── Ordenar por fecha descendente (más reciente primero) para salida ──
     printf '%s\n' "${deduped[@]}" | sort -t'|' -k3,3 -r
 
+    return 0
+}
+
+
+# ─── resolve_version_from_buildsh ───────────────────────────────────────────────
+# Resuelve variables tipo ${VAR} o $VAR en una línea de versión usando
+# las definiciones del build.sh.
+#
+# Uso: resolve_version_from_buildsh <version_raw> <build_sh_content>
+#
+#   version_raw      — Línea extraída (ej: "${MAJOR}.${MINOR}")
+#   build_sh_content — Contenido completo del build.sh para buscar variables
+#
+# Output (stdout): Versión resuelta (ej: "3.12.2")
+#
+# Retorno:
+#   0 — Éxito
+#   1 — No se pudieron resolver todas las variables
+#
+resolve_version_from_buildsh() {
+    local version_raw="$1"
+    local build_sh="$2"
+    local resolved="$version_raw"
+    local max_iter=10
+    local iter=0
+
+    # Quitar comillas
+    resolved=$(echo "$resolved" | tr -d '"' | tr -d "'")
+
+    # Resolver ${VAR} (con llaves)
+    while [[ "$resolved" =~ \$\{([a-zA-Z_][a-zA-Z0-9_]*)\} ]] && [[ $iter -lt $max_iter ]]; do
+        local var_name="${BASH_REMATCH[1]}"
+        local var_value
+        var_value=$(echo "$build_sh" | grep "^${var_name}=" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d ' ')
+        if [[ -n "$var_value" ]]; then
+            resolved="${resolved//\$\{${var_name}\}/${var_value}}"
+        else
+            break
+        fi
+        ((iter++))
+    done
+
+    # Resolver $VAR (sin llaves)
+    while [[ "$resolved" =~ \$([a-zA-Z_][a-zA-Z0-9_]*) ]] && [[ $iter -lt $max_iter ]]; do
+        local var_name="${BASH_REMATCH[1]}"
+        local var_value
+        var_value=$(echo "$build_sh" | grep "^${var_name}=" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d ' ')
+        if [[ -n "$var_value" ]]; then
+            resolved="${resolved//\$${var_name}/${var_value}}"
+        else
+            break
+        fi
+        ((iter++))
+    done
+
+    # Si después de resolver siguen apareciendo variables (no se pudieron resolver),
+    # devolvemos error
+    if [[ "$resolved" =~ \$\{?[a-zA-Z_] ]]; then
+        return 1
+    fi
+
+    echo "$resolved"
     return 0
 }
 
@@ -328,14 +394,24 @@ extract_version() {
         return 1
     fi
 
-    local version
-    version="$(git -C "$repo_dir" show "${commit_hash}:packages/${pkg}/build.sh" 2>/dev/null | \
-        grep "^TERMUX_PKG_VERSION=" | head -1 | cut -d= -f2 | tr -d '"' | tr -d ' ' || true)"
+    local build_sh_content
+    build_sh_content="$(git -C "$repo_dir" show "${commit_hash}:packages/${pkg}/build.sh" 2>/dev/null || true)"
+    if [[ -z "$build_sh_content" ]]; then
+        echo "Error: commit '${commit_hash}' or package '${pkg}' not found" >&2
+        return 1
+    fi
 
-    if [[ -z "$version" ]]; then
+    local version_raw
+    version_raw="$(echo "$build_sh_content" | grep "^TERMUX_PKG_VERSION=" | head -1 | cut -d= -f2 || true)"
+
+    if [[ -z "$version_raw" ]]; then
         echo "Error: could not extract TERMUX_PKG_VERSION for commit '${commit_hash}' package '${pkg}'" >&2
         return 1
     fi
+
+    # Intentar resolver variables si las hay
+    local version
+    version="$(resolve_version_from_buildsh "$version_raw" "$build_sh_content")" || version="$version_raw"
 
     echo "$version"
     return 0
