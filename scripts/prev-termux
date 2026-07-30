@@ -482,6 +482,21 @@ cmd_subinstall() {
     extract_artifact "$target_file" "$pkg" "$version"
 }
 
+# ─── format_duration ──────────────────────────────────────────────────────────
+# Formatea segundos a formato legible: Xh Ym Zs
+#
+format_duration() {
+    local seconds=$1
+    local h=$((seconds / 3600))
+    local m=$(((seconds % 3600) / 60))
+    local s=$((seconds % 60))
+    local result=""
+    [[ $h -gt 0 ]] && result+="${h}h "
+    [[ $m -gt 0 ]] && result+="${m}m "
+    result+="${s}s"
+    echo "$result"
+}
+
 # ─── Command: status ─────────────────────────────────────────────────────────────
 # Usage: prev-termux status [<package>]
 #
@@ -490,19 +505,17 @@ cmd_subinstall() {
 #
 cmd_status() {
     local filter="${1:-}"
+    local limit=20
 
     if [[ -z "$RELEASE_REPO" ]]; then
         die "Release repository not set.
   Set GITHUB_REPOSITORY env var or use 'gh repo set-default'."
     fi
 
-    info "Recent workflow runs for '${WORKFLOW_FILE}' in ${RELEASE_REPO}"
-    echo ""
-
-    local runs
-    runs="$(gh run list --workflow "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
-        --limit 20 \
-        --json databaseId,status,conclusion,displayTitle,createdAt,event 2>/dev/null)" || {
+    local raw
+    raw="$(gh run list --workflow "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
+        --limit "$limit" \
+        --json databaseId,displayTitle,status,conclusion,createdAt,updatedAt 2>/dev/null)" || {
         warn "No workflow runs found, or workflow '${WORKFLOW_FILE}' does not exist."
         echo ""
         info "Available workflows in ${RELEASE_REPO}:"
@@ -510,39 +523,65 @@ cmd_status() {
         return
     }
 
-    if [[ -z "$runs" || "$runs" == "[]" ]]; then
+    if [[ -z "$raw" || "$raw" == "[]" ]]; then
         info "No runs found"
         return
     fi
 
-    # Aplicar filtro opcional por nombre de paquete
+    # Aplicar filtro si se especificó
     if [[ -n "$filter" ]]; then
-        runs="$(echo "$runs" | jq -c --arg f "$filter" '[.[] | select(.displayTitle | test($f; "i"))]' 2>/dev/null || true)"
-        if [[ -z "$runs" || "$runs" == "[]" ]]; then
-            info "No runs found for '${filter}'"
+        local filtered
+        filtered="$(echo "$raw" | jq -c --arg f "$filter" '[.[] | select(.displayTitle | test($f; "i"))]' 2>/dev/null)"
+        if [[ -z "$filtered" || "$filtered" == "[]" ]]; then
+            info "No runs found for '$filter'"
             return
         fi
+        raw="$filtered"
     fi
 
+    # Cabecera
     echo ""
-    printf "  %-20s %-10s %-10s %s\n" "PACKAGE" "STATUS" "RESULT" "DATE"
-    echo "  $(printf '%*s' 60 '' | tr ' ' '-')"
+    printf "  %-7s %-22s %s\n" "STATUS" "PACKAGE" "ELAPSED"
+    echo "  $(printf '%*s' 50 '' | tr ' ' '─')"
 
-    echo "$runs" | jq -r '.[] | [
-        .displayTitle,
-        .status,
-        (.conclusion // "in_progress"),
-        (.createdAt[0:10] // "?")
-    ] | @tsv' 2>/dev/null | while IFS=$'\t' read -r title status conclusion date; do
-        icon="?"
+    # Procesar cada run
+    echo "$raw" | jq -c '.[]' 2>/dev/null | while read -r run; do
+        local title run_status conclusion created updated
+        title=$(echo "$run" | jq -r '.displayTitle // "?"')
+        run_status=$(echo "$run" | jq -r '.status // "?"')
+        conclusion=$(echo "$run" | jq -r '.conclusion // "null"')
+        created=$(echo "$run" | jq -r '.createdAt // ""')
+        updated=$(echo "$run" | jq -r '.updatedAt // ""')
+
+        # Icono
+        local icon="?"
         case "$conclusion" in
             success) icon="✅" ;;
             failure) icon="❌" ;;
+            cancelled) icon="⏹️" ;;
             skipped) icon="⏭️" ;;
-            in_progress|null) icon="🔄" ;;
-            *) icon="❓" ;;
+            null|in_progress) icon="🔄" ;;
         esac
-        printf "  %-20s %-10s %-10s %s\n" "$title" "$status" "${icon}" "$date"
+
+        # Calcular elapsed time
+        local elapsed=""
+        if [[ -n "$created" ]]; then
+            local created_sec updated_sec now_sec diff
+            created_sec=$(date -d "$created" +%s 2>/dev/null || echo 0)
+            if [[ "$run_status" == "completed" && -n "$updated" ]]; then
+                updated_sec=$(date -d "$updated" +%s 2>/dev/null || echo 0)
+                diff=$((updated_sec - created_sec))
+            else
+                now_sec=$(date +%s)
+                diff=$((now_sec - created_sec))
+            fi
+            if [[ $diff -gt 0 ]]; then
+                elapsed=$(format_duration $diff)
+            fi
+        fi
+        [[ -z "$elapsed" ]] && elapsed="-"
+
+        printf "  %-7s %-22s %s\n" "$icon" "$title" "$elapsed"
     done
 }
 
@@ -607,8 +646,8 @@ ${BOLD}Commands:${NC}
       Never uses pacman -U — purely local extraction
 
   status [<package>]
-      Show recent workflow runs (last 20).
-      If a package name is given, filter runs by it.
+      Show recent workflow runs (status, package, elapsed).
+      If package name is given, filter runs by it.
 
   cache info
       Show cache statistics (size, age, packages cached).
