@@ -482,20 +482,6 @@ cmd_subinstall() {
     extract_artifact "$target_file" "$pkg" "$version"
 }
 
-# ─── format_duration ──────────────────────────────────────────────────────────
-# Formatea segundos a formato legible: Xh Ym Zs
-#
-format_duration() {
-    local seconds=$1
-    local h=$((seconds / 3600))
-    local m=$(((seconds % 3600) / 60))
-    local s=$((seconds % 60))
-    local result=""
-    [[ $h -gt 0 ]] && result+="${h}h "
-    [[ $m -gt 0 ]] && result+="${m}m "
-    result+="${s}s"
-    echo "$result"
-}
 
 # ─── Command: status ─────────────────────────────────────────────────────────────
 # Usage: prev-termux status [<package>]
@@ -507,20 +493,11 @@ cmd_status() {
     local filter="${1:-}"
     local limit=20
 
-    if [[ -z "$RELEASE_REPO" ]]; then
-        die "Release repository not set.
-  Set GITHUB_REPOSITORY env var or use 'gh repo set-default'."
-    fi
-
     local raw
     raw="$(gh run list --workflow "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
         --limit "$limit" \
-        --json databaseId,displayTitle,status,conclusion,createdAt,updatedAt 2>/dev/null)" || {
-        warn "No workflow runs found, or workflow '${WORKFLOW_FILE}' does not exist."
-        echo ""
-        info "Available workflows in ${RELEASE_REPO}:"
-        gh workflow list -R "$RELEASE_REPO" 2>/dev/null || die "Cannot access repository ${RELEASE_REPO}. Check permissions."
-        return
+        --json displayTitle,status,conclusion,createdAt,updatedAt 2>/dev/null)" || {
+        die "Failed to fetch workflow runs"
     }
 
     if [[ -z "$raw" || "$raw" == "[]" ]]; then
@@ -528,7 +505,7 @@ cmd_status() {
         return
     fi
 
-    # Aplicar filtro si se especificó
+    # Aplicar filtro
     if [[ -n "$filter" ]]; then
         local filtered
         filtered="$(echo "$raw" | jq -c --arg f "$filter" '[.[] | select(.displayTitle | test($f; "i"))]' 2>/dev/null)"
@@ -539,50 +516,35 @@ cmd_status() {
         raw="$filtered"
     fi
 
-    # Cabecera
     echo ""
-    printf "  %-7s %-22s %s\n" "STATUS" "PACKAGE" "ELAPSED"
-    echo "  $(printf '%*s' 50 '' | tr ' ' '─')"
+    # Un solo jq que procesa TODO y genera el output formateado
+    echo "$raw" | jq -r '
+        def icon:
+            if .conclusion == "success" then "✅"
+            elif .conclusion == "failure" then "❌"
+            elif .conclusion == "cancelled" then "⏹️"
+            elif .conclusion == "skipped" then "⏭️"
+            elif .status == "in_progress" or .conclusion == null then "🔄"
+            else "❓"
+            end;
+        def elapsed:
+            if .createdAt then
+                ((if .status == "completed" and .updatedAt then .updatedAt else now end) - (.createdAt | fromdateiso8601)) as $sec
+                | if $sec < 0 then "-"
+                  else
+                    (($sec / 3600 | floor) | tostring) as $h
+                    | (($sec % 3600 / 60 | floor) | tostring) as $m
+                    | (($sec % 60 | floor) | tostring) as $s
+                    | (if $h != "0" then $h + "h " else "" end) + (if $m != "0" then $m + "m " else "" end) + $s + "s"
+                  end
+            else "-"
+            end;
+        def trunc: .[0:22] + if length > 22 then "…" else "" end;
+        "  \(icon)    \(.displayTitle | trunc)   \(elapsed)"
+    ' 2>/dev/null
 
-    # Procesar cada run
-    echo "$raw" | jq -c '.[]' 2>/dev/null | while read -r run; do
-        local title run_status conclusion created updated
-        title=$(echo "$run" | jq -r '.displayTitle // "?"')
-        run_status=$(echo "$run" | jq -r '.status // "?"')
-        conclusion=$(echo "$run" | jq -r '.conclusion // "null"')
-        created=$(echo "$run" | jq -r '.createdAt // ""')
-        updated=$(echo "$run" | jq -r '.updatedAt // ""')
-
-        # Icono
-        local icon="?"
-        case "$conclusion" in
-            success) icon="✅" ;;
-            failure) icon="❌" ;;
-            cancelled) icon="⏹️" ;;
-            skipped) icon="⏭️" ;;
-            null|in_progress) icon="🔄" ;;
-        esac
-
-        # Calcular elapsed time
-        local elapsed=""
-        if [[ -n "$created" ]]; then
-            local created_sec updated_sec now_sec diff
-            created_sec=$(date -d "$created" +%s 2>/dev/null || echo 0)
-            if [[ "$run_status" == "completed" && -n "$updated" ]]; then
-                updated_sec=$(date -d "$updated" +%s 2>/dev/null || echo 0)
-                diff=$((updated_sec - created_sec))
-            else
-                now_sec=$(date +%s)
-                diff=$((now_sec - created_sec))
-            fi
-            if [[ $diff -gt 0 ]]; then
-                elapsed=$(format_duration $diff)
-            fi
-        fi
-        [[ -z "$elapsed" ]] && elapsed="-"
-
-        printf "  %-7s %-22s %s\n" "$icon" "$title" "$elapsed"
-    done
+    echo ""
+    info "Run: prev-termux status <package> to filter"
 }
 
 # ─── Command: cache ──────────────────────────────────────────────────────────────
