@@ -422,24 +422,19 @@ cmd_subinstall() {
             die "No .pkg.tar.* files found in ${output_dir}. Build a package first: ./scripts/prev-termux build <package>"
         fi
 
-        if [[ ${#files[@]} -eq 1 ]]; then
-            target_file="${files[0]}"
-            info "Using only available artifact: $(basename "$target_file")"
-        else
-            # Mostrar en fzf para seleccionar
-            if ! command -v fzf &>/dev/null; then
-                die "fzf is not installed. Install with: pkg install fzf"
-            fi
-
-            local selected
-            selected="$(printf '%s\n' "${files[@]}" | fzf \
-                --prompt='Select package to install: ' \
-                --preview 'tar -tzf {} 2>/dev/null | head -20' \
-                --preview-window='right:60%' \
-                2>/dev/null)" || die "No file selected"
-
-            target_file="$selected"
+        # Siempre mostrar en fzf para seleccionar
+        if ! command -v fzf &>/dev/null; then
+            die "fzf is not installed. Install with: pkg install fzf"
         fi
+
+        local selected
+        selected="$(printf '%s\n' "${files[@]}" | fzf \
+            --prompt='Select package to install: ' \
+            --preview 'tar -tzf {} 2>/dev/null | head -20' \
+            --preview-window='right:60%' \
+            2>/dev/null)" || die "No file selected"
+
+        target_file="$selected"
     fi
 
     # Extraer nombre del paquete y versión del nombre del archivo
