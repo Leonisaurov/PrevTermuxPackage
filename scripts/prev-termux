@@ -287,26 +287,41 @@ cmd_build() {
 
     if $do_download; then
         echo ""
-        info "Downloading artifacts..."
+        info "Checking for local artifacts..."
         mkdir -p "${PWD}/output"
 
-        # Intentar descargar con patrón específico
-        if gh release download "$tag" -R "$RELEASE_REPO" \
-            --pattern "*.pkg.tar.xz" \
-            --dir "${PWD}/output" \
-            --skip-existing 2>&1; then
-            ok "Artifacts downloaded to ${PWD}/output/"
+        # Buscar si ya existe algún .pkg.tar.xz en output/
+        shopt -s nullglob
+        LOCAL_FILES=("${PWD}/output/"*.pkg.tar.*)
+        shopt -u nullglob
+        if [[ ${#LOCAL_FILES[@]} -gt 0 && -f "${LOCAL_FILES[0]}" ]]; then
+            ok "Artifact already downloaded:"
+            echo ""
+            ls -lh "${PWD}/output/"*.pkg.tar.* 2>/dev/null
+            echo ""
+            info "Run this to install:"
+            echo "  pacman -U ${PWD}/output/$(basename "${LOCAL_FILES[0]}")"
         else
-            # Fallback: descargar todos los assets
-            warn "Pattern-specific download had issues; downloading all assets..."
-            gh release download "$tag" -R "$RELEASE_REPO" \
-                --dir "${PWD}/output" \
-                --skip-existing 2>&1 || true
-            ok "All assets downloaded to ${PWD}/output/"
-        fi
+            info "Downloading artifacts..."
 
-        echo ""
-        ls -lh "${PWD}/output/" 2>/dev/null | grep -v '^total' || true
+            # Intentar descargar con patrón específico
+            if gh release download "$tag" -R "$RELEASE_REPO" \
+                --pattern "*.pkg.tar.xz" \
+                --dir "${PWD}/output" \
+                --skip-existing 2>&1; then
+                ok "Artifacts downloaded to ${PWD}/output/"
+            else
+                # Fallback: descargar todos los assets
+                warn "Pattern-specific download had issues; downloading all assets..."
+                gh release download "$tag" -R "$RELEASE_REPO" \
+                    --dir "${PWD}/output" \
+                    --skip-existing 2>&1 || true
+                ok "All assets downloaded to ${PWD}/output/"
+            fi
+
+            echo ""
+            ls -lh "${PWD}/output/"*.pkg.tar.* 2>/dev/null || ls -lh "${PWD}/output/" 2>/dev/null | grep -v '^total' || true
+        fi
     fi
 }
 
