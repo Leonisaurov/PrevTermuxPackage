@@ -38,8 +38,8 @@ on:
         options:
           - fast
           - full
-      zram:
-        description: "Enable ZRAM (16GB) for heavy builds (zig, rust, llvm)"
+      heavy:
+        description: "Optimize for heavy builds: ZRAM 16GB + free disk space"
         required: false
         default: false
         type: boolean
@@ -63,18 +63,29 @@ jobs:
           ref: ${{ inputs.git_ref }}
           path: termux-packages
 
-      # ── ZRAM: 16GB de RAM comprimida para builds pesados ──
-      - name: Setup ZRAM
-        if: ${{ inputs.zram }}
+      # ── Heavy build: free disk + ZRAM 16GB ──
+      - name: Optimize for heavy build
+        if: ${{ inputs.heavy }}
         shell: bash
         run: |
-          echo "Setting up 16GB ZRAM for heavy build..."
+          echo "=== Heavy build optimization ==="
+          echo ""
+
+          echo "1. Freeing disk space..."
+          sudo apt remove -y dotnet-sdk* azure-cli ghc* \
+            '^llvm-*' '^google-*' '^mysql-*' '^firefox-*' 2>/dev/null || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null || true
+          echo "Disk space after cleanup:"
+          df -h /
+          echo ""
+
+          echo "2. Setting up 16GB ZRAM..."
           sudo swapoff -a 2>/dev/null || true
           sudo modprobe zram 2>/dev/null || true
           echo "16G" | sudo tee /sys/block/zram0/disksize 2>/dev/null || true
           sudo mkswap /dev/zram0 2>/dev/null || true
           sudo swapon -p 5 /dev/zram0 2>/dev/null || true
-          echo "ZRAM enabled:"
+          echo "Memory after ZRAM:"
           free -h
 
       # ── 2. Extraer versión del paquete ──
