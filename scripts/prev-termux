@@ -367,7 +367,7 @@ cmd_build() {
 
         # Buscar si ya existe algún .pkg.tar.xz en output/
         shopt -s nullglob
-        LOCAL_FILES=("${PWD}/output/"*.pkg.tar.*)
+        LOCAL_FILES=("${PWD}/output/"${package}-*.pkg.tar.*)
         shopt -u nullglob
         if [[ ${#LOCAL_FILES[@]} -gt 0 && -f "${LOCAL_FILES[0]}" ]]; then
             ok "Artifact already downloaded:"
