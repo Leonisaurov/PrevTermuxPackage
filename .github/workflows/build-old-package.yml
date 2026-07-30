@@ -1,4 +1,5 @@
 name: 📦 Build Old Termux Package
+run-name: 📦 ${{ inputs.package_name }}
 
 on:
   push: {}
