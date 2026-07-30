@@ -151,7 +151,7 @@ El workflow se dispara mediante `workflow_dispatch` y acepta los siguientes inpu
 | `build_mode` | Modo de build (`normal` o `full`) | `normal` |
 
 Flujo interno:
-1. Corre en el contenedor `ghcr.io/termux/termux-packages:latest`
+1. Corre en el contenedor `ghcr.io/termux/package-builder`
 2. Ejecuta `./build-package.sh --format pacman -a aarch64 -I <package>`
 3. Sube el artifact generado
 4. Crea un GitHub Release con el `.pkg.tar.xz` usando el tag `{package}-{version}-{sha7}`
@@ -160,7 +160,7 @@ Flujo interno:
 
 - **Clonado recurrente**: El clonado de `termux-packages` (~1–2 GB) ocurre cada vez que usas `list` o `build`. Se recomienda mantener un clon persistente para acelerar las operaciones.
 - **Dependencias**: Las dependencias se resuelven con `-I` (install) desde el repo oficial APT. Si una versión muy antigua requiere dependencias incompatibles, usa `build_mode: full` con el flag `-F` para rebuildear todo desde cero.
-- **Imagen Docker**: Solo existe una imagen `latest` de `termux-packages`. Si builds muy antiguos fallan por mismatch del NDK, considera construir una imagen custom (no soportado por defecto en este proyecto).
+- **Imagen Docker**: Solo existe la imagen `ghcr.io/termux/package-builder`. Si builds muy antiguos fallan por mismatch del NDK, considera construir una imagen custom (no soportado por defecto en este proyecto).
 
 ## Contribuir
 
