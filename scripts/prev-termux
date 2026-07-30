@@ -225,65 +225,88 @@ cmd_build() {
 
     # ── Check / Download / Trigger ────────────────────────────────────────────
 
+    local do_download=false
+
     info "Checking for existing release..."
     if gh release view "$tag" -R "$RELEASE_REPO" &>/dev/null; then
         ok "Release '${tag}' already exists!"
+        do_download=true
+    else
+        # Buscar releases que coincidan por paquete y versión
+        info "Tag exacto '${tag}' no encontrado. Buscando releases por versión..."
+        local matching_tag
+        matching_tag="$(gh release list -R "$RELEASE_REPO" --limit 50 --json tagName --jq '.[].tagName' 2>/dev/null | grep "^${package}-${version}-" | head -1 || true)"
+
+        if [[ -n "$matching_tag" ]]; then
+            ok "Found existing release: ${matching_tag}"
+            tag="$matching_tag"
+            do_download=true
+        else
+            info "No existing release found. Triggering build workflow..."
+            echo ""
+
+            # Intentar habilitar el workflow por si está inactivo
+            info "Ensuring workflow is enabled..."
+            gh workflow enable "$WORKFLOW_FILE" -R "$RELEASE_REPO" 2>/dev/null || true
+
+            local workflow_output
+            workflow_output="$(gh workflow run "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
+                --ref "$WORKFLOW_REF" \
+                -f package_name="$package" -f git_ref="$sha" 2>&1)" || {
+                err "Failed to trigger workflow: ${workflow_output}"
+                echo ""
+                info "Possible solutions:"
+                echo "  1. Go to https://github.com/${RELEASE_REPO}/actions and check if the workflow is enabled"
+                echo "  2. Run: gh workflow enable ${WORKFLOW_FILE} -R ${RELEASE_REPO}"
+                echo "  3. Push a commit to trigger the workflow activation: git commit --allow-empty -m 'activate workflows' && git push"
+                echo "  4. Or run workflow manually from the GitHub UI"
+                exit 1
+            }
+
+            echo ""
+            info "Workflow dispatched! Waiting for run ID..."
+            sleep 5
+
+            local run_id=""
+            run_id="$(gh run list --workflow "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
+                --json databaseId --jq '.[0].databaseId' --limit 1 2>/dev/null)" || true
+
+            if [[ -n "$run_id" ]]; then
+                ok "Workflow started: #${run_id}"
+                echo ""
+                echo -e "  ${BOLD}Monitor:${NC}  gh run watch ${run_id} -R ${RELEASE_REPO}"
+                echo -e "  ${BOLD}Status:${NC}   prev-termux status"
+                echo -e "  ${BOLD}URL:${NC}      https://github.com/${RELEASE_REPO}/actions/runs/${run_id}"
+            else
+                warn "Could not retrieve run ID. Check status manually:"
+                echo -e "  ${BOLD}  gh run list --workflow ${WORKFLOW_FILE} -R ${RELEASE_REPO}${NC}"
+                echo -e "  ${BOLD}  prev-termux status${NC}"
+            fi
+        fi
+    fi
+
+    if $do_download; then
         echo ""
         info "Downloading artifacts..."
         mkdir -p "${PWD}/output"
 
+        # Intentar descargar con patrón específico
         if gh release download "$tag" -R "$RELEASE_REPO" \
-            --pattern "*.pkg.tar.xz" --dir "${PWD}/output" 2>/dev/null; then
+            --pattern "*.pkg.tar.xz" \
+            --dir "${PWD}/output" \
+            --skip-existing 2>&1; then
             ok "Artifacts downloaded to ${PWD}/output/"
         else
-            warn "No .pkg.tar.xz files found; downloading all assets..."
-            gh release download "$tag" -R "$RELEASE_REPO" --dir "${PWD}/output"
+            # Fallback: descargar todos los assets
+            warn "Pattern-specific download had issues; downloading all assets..."
+            gh release download "$tag" -R "$RELEASE_REPO" \
+                --dir "${PWD}/output" \
+                --skip-existing 2>&1 || true
             ok "All assets downloaded to ${PWD}/output/"
         fi
 
         echo ""
         ls -lh "${PWD}/output/" 2>/dev/null | grep -v '^total' || true
-    else
-        info "No existing release found. Triggering build workflow..."
-        echo ""
-
-        # Intentar habilitar el workflow por si está inactivo
-        info "Ensuring workflow is enabled..."
-        gh workflow enable "$WORKFLOW_FILE" -R "$RELEASE_REPO" 2>/dev/null || true
-
-        local workflow_output
-        workflow_output="$(gh workflow run "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
-            --ref "$WORKFLOW_REF" \
-            -f package_name="$package" -f git_ref="$sha" 2>&1)" || {
-            err "Failed to trigger workflow: ${workflow_output}"
-            echo ""
-            info "Possible solutions:"
-            echo "  1. Go to https://github.com/${RELEASE_REPO}/actions and check if the workflow is enabled"
-            echo "  2. Run: gh workflow enable ${WORKFLOW_FILE} -R ${RELEASE_REPO}"
-            echo "  3. Push a commit to trigger the workflow activation: git commit --allow-empty -m 'activate workflows' && git push"
-            echo "  4. Or run workflow manually from the GitHub UI"
-            exit 1
-        }
-
-        echo ""
-        info "Workflow dispatched! Waiting for run ID..."
-        sleep 5
-
-        local run_id=""
-        run_id="$(gh run list --workflow "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
-            --json databaseId --jq '.[0].databaseId' --limit 1 2>/dev/null)" || true
-
-        if [[ -n "$run_id" ]]; then
-            ok "Workflow started: #${run_id}"
-            echo ""
-            echo -e "  ${BOLD}Monitor:${NC}  gh run watch ${run_id} -R ${RELEASE_REPO}"
-            echo -e "  ${BOLD}Status:${NC}   prev-termux status"
-            echo -e "  ${BOLD}URL:${NC}      https://github.com/${RELEASE_REPO}/actions/runs/${run_id}"
-        else
-            warn "Could not retrieve run ID. Check status manually:"
-            echo -e "  ${BOLD}  gh run list --workflow ${WORKFLOW_FILE} -R ${RELEASE_REPO}${NC}"
-            echo -e "  ${BOLD}  prev-termux status${NC}"
-        fi
     fi
 }
 
