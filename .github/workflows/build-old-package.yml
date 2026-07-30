@@ -1,10 +1,12 @@
 name: 📦 Build Old Termux Package
 
 on:
+  push: {}                # ← AGREGADO: activa el workflow en GitHub Actions al hacer push
+  pull_request: {}        # ← AGREGADO: activa el workflow en PRs
   workflow_dispatch:
     inputs:
       package_name:
-        description: Nombre del paquete (ej: bash, python)
+        description: "Nombre del paquete (ej: bash, python)"
         required: true
         type: string
       git_ref:
@@ -120,10 +122,10 @@ jobs:
           else
             PACKAGE_VERSION="${{ steps.get_version.outputs.package_version }}"
             NOTES="Package: ${{ inputs.package_name }}
-        Version: ${PACKAGE_VERSION}
-        Architecture: ${{ inputs.architecture }}
-        Format: ${{ inputs.format }}
-        Commit: ${{ inputs.git_ref }}"
+            Version: ${PACKAGE_VERSION}
+            Architecture: ${{ inputs.architecture }}
+            Format: ${{ inputs.format }}
+            Commit: ${{ inputs.git_ref }}"
 
             shopt -s nullglob
             FILES=(termux-packages/output/*.pkg.tar.* termux-packages/output/*.deb)

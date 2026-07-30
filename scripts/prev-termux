@@ -20,7 +20,16 @@ if [[ -z "$RELEASE_REPO" ]] && command -v gh &>/dev/null; then
 fi
 
 readonly WORKFLOW_FILE="build-old-package.yml"
-readonly WORKFLOW_REF="main"
+
+# Auto-detect default branch; overridable via PREV_TERMUX_WORKFLOW_REF env var.
+WORKFLOW_REF="${PREV_TERMUX_WORKFLOW_REF:-}"
+if [[ -z "$WORKFLOW_REF" ]] && command -v gh &>/dev/null; then
+    WORKFLOW_REF="$(gh repo view --json defaultBranch --jq '.defaultBranch' -R "$RELEASE_REPO" 2>/dev/null || echo "main")"
+fi
+if [[ -z "$WORKFLOW_REF" ]]; then
+    WORKFLOW_REF="main"
+fi
+readonly WORKFLOW_REF
 
 # ─── Source discover library (required) ─────────────────────────────────────────
 
@@ -91,13 +100,33 @@ Install them with:
 # in an interactive fzf selector, and prints the selected version details.
 #
 cmd_list() {
-    local package="$1"
+    local package=""
+    local refresh=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --refresh) refresh=1; shift ;;
+            -*)
+                die "Unknown argument: $1"
+                ;;
+            *)
+                if [[ -z "$package" ]]; then
+                    package="$1"
+                    shift
+                else
+                    die "Unknown argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$package" ]] && die "Usage: prev-termux list <package> [--refresh]"
 
     info "Discovering versions for '${package}'..."
     echo ""
 
     local selected
-    selected="$(fzf_select "$package")" || die "Version selection cancelled or failed"
+    selected="$(fzf_select "$package" "$refresh")" || die "Version selection cancelled or failed"
     [[ -z "$selected" ]] && die "No version selected"
 
     # Parse: version|commit_full|date|commit_short
@@ -119,11 +148,10 @@ cmd_list() {
 # Direct mode (--commit): skips fzf, uses the provided commit SHA directly.
 #
 cmd_build() {
-    local package="$1"
+    local package=""
     local commit_sha=""
-    shift
+    local refresh=0
 
-    # Parse optional --commit flag (must come before any positional args)
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --commit)
@@ -135,11 +163,22 @@ cmd_build() {
                 commit_sha="${1#*=}"
                 shift
                 ;;
-            *)
+            --refresh) refresh=1; shift ;;
+            -*)
                 die "Unknown argument: $1"
+                ;;
+            *)
+                if [[ -z "$package" ]]; then
+                    package="$1"
+                    shift
+                else
+                    die "Unknown argument: $1"
+                fi
                 ;;
         esac
     done
+
+    [[ -z "$package" ]] && die "Usage: prev-termux build <package> [--commit <sha>] [--refresh]"
 
     local version="" sha="" date="" short_sha=""
 
@@ -162,7 +201,7 @@ cmd_build() {
         echo ""
 
         local selected
-        selected="$(fzf_select "$package")" || die "Version selection cancelled or failed"
+        selected="$(fzf_select "$package" "$refresh")" || die "Version selection cancelled or failed"
         [[ -z "$selected" ]] && die "No version selected"
 
         IFS='|' read -r version sha date short_sha <<< "$selected"
@@ -208,13 +247,23 @@ cmd_build() {
         info "No existing release found. Triggering build workflow..."
         echo ""
 
-        if ! gh workflow run "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
+        # Intentar habilitar el workflow por si está inactivo
+        info "Ensuring workflow is enabled..."
+        gh workflow enable "$WORKFLOW_FILE" -R "$RELEASE_REPO" 2>/dev/null || true
+
+        local workflow_output
+        workflow_output="$(gh workflow run "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
             --ref "$WORKFLOW_REF" \
-            -f package_name="$package" -f git_ref="$sha"; then
-            die "Failed to trigger workflow.
-  Check that '${WORKFLOW_FILE}' exists in ${RELEASE_REPO}
-  and that you have write permissions."
-        fi
+            -f package_name="$package" -f git_ref="$sha" 2>&1)" || {
+            err "Failed to trigger workflow: ${workflow_output}"
+            echo ""
+            info "Possible solutions:"
+            echo "  1. Go to https://github.com/${RELEASE_REPO}/actions and check if the workflow is enabled"
+            echo "  2. Run: gh workflow enable ${WORKFLOW_FILE} -R ${RELEASE_REPO}"
+            echo "  3. Push a commit to trigger the workflow activation: git commit --allow-empty -m 'activate workflows' && git push"
+            echo "  4. Or run workflow manually from the GitHub UI"
+            exit 1
+        }
 
         echo ""
         info "Workflow dispatched! Waiting for run ID..."
@@ -262,6 +311,41 @@ cmd_status() {
     fi
 }
 
+# ─── Command: cache ──────────────────────────────────────────────────────────────
+# Usage: prev-termux cache {info|clear [--all|<package>]}
+#
+# Manages the persistent version cache (see discover.sh).
+#
+cmd_cache() {
+    local subcommand="${1:-}"
+
+    case "$subcommand" in
+        info)
+            cache_stats
+            ;;
+        clear)
+            local pkg="${2:-}"
+            if [[ "$pkg" == "--all" ]]; then
+                local cache_dir
+                cache_dir="$(get_cache_dir)"
+                rm -rf "${cache_dir:?}/versions" "${cache_dir:?}/repo"
+                info "Caché completo eliminado (incluyendo repo bare)"
+            elif [[ -n "$pkg" ]]; then
+                clear_version_cache "$pkg"
+                ok "Caché de '$pkg' eliminado"
+            else
+                clear_version_cache
+                ok "Caché de versiones eliminado (repo bare conservado)"
+            fi
+            ;;
+        *)
+            err "Subcomando desconocido: $subcommand"
+            echo "Uso: prev-termux cache {info|clear [--all|paquete]}"
+            return 1
+            ;;
+    esac
+}
+
 # ─── Command: help ───────────────────────────────────────────────────────────────
 
 cmd_help() {
@@ -270,19 +354,25 @@ ${BOLD}Usage:${NC} prev-termux <command> [options]
 
 ${BOLD}Commands:${NC}
 
-  list <package>
+  list <package> [--refresh]
       Discover and interactively select a historical version of a Termux
       package. Displays version, commit SHA, and date.
+      --refresh   Force re-discovery, ignoring cache
 
-  build <package>
+  build <package> [--commit <sha>] [--refresh]
       Interactive mode: pick a version via fzf, then either download an
       existing release or trigger the GHA build workflow.
-
-  build <package> --commit <sha>
-      Direct mode: skip fzf, build (or download) the exact commit SHA.
+      --commit <sha>  Direct mode: skip fzf, build the exact commit SHA.
+      --refresh       Force re-discovery, ignoring cache
 
   status
       Show the 10 most recent runs of the build workflow.
+
+  cache info
+      Show cache statistics (size, age, packages cached).
+
+  cache clear [--all|<package>]
+      Clear version cache (keeps bare repo unless --all).
 
   help
       Show this help message.
@@ -290,8 +380,14 @@ ${BOLD}Commands:${NC}
 ${BOLD}Examples:${NC}
 
   prev-termux list python
+  prev-termux list python --refresh
   prev-termux build nodejs
   prev-termux build libfoo --commit a1b2c3d
+  prev-termux build nodejs --refresh
+  prev-termux cache info
+  prev-termux cache clear
+  prev-termux cache clear python
+  prev-termux cache clear --all
   prev-termux status
 
 ${BOLD}Environment:${NC}
@@ -308,7 +404,8 @@ ${BOLD}Requirements:${NC}
 ${BOLD}Library dependencies:${NC}
 
   scripts/lib/discover.sh  (required — provides discover_versions,
-                            extract_version, and fzf_select)
+                            extract_version, fzf_select, cache
+                            management functions)
   scripts/lib/build.sh     (optional — loaded if present)
 EOF
 }
@@ -324,11 +421,15 @@ main() {
     local command="$1"
     shift
 
-    # help and version commands bypass dependency checks
+    # Commands that bypass dependency checks
     case "$command" in
         help|--help|-h)
             cmd_help
             exit 0
+            ;;
+        cache)
+            cmd_cache "$@"
+            exit $?
             ;;
     esac
 
@@ -337,11 +438,11 @@ main() {
 
     case "$command" in
         list)
-            [[ $# -lt 1 ]] && die "Usage: prev-termux list <package>"
-            cmd_list "$1"
+            [[ $# -lt 1 ]] && die "Usage: prev-termux list <package> [--refresh]"
+            cmd_list "$@"
             ;;
         build)
-            [[ $# -lt 1 ]] && die "Usage: prev-termux build <package> [--commit <sha>]"
+            [[ $# -lt 1 ]] && die "Usage: prev-termux build <package> [--commit <sha>] [--refresh]"
             cmd_build "$@"
             ;;
         status)
