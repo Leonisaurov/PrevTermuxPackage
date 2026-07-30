@@ -483,11 +483,14 @@ cmd_subinstall() {
 }
 
 # ─── Command: status ─────────────────────────────────────────────────────────────
-# Usage: prev-termux status
+# Usage: prev-termux status [<package>]
 #
-# Shows the 10 most recent workflow runs for the build pipeline.
+# Shows the 20 most recent workflow runs for the build pipeline.
+# Optionally filter runs by package name (matched case-insensitively).
 #
 cmd_status() {
+    local filter="${1:-}"
+
     if [[ -z "$RELEASE_REPO" ]]; then
         die "Release repository not set.
   Set GITHUB_REPOSITORY env var or use 'gh repo set-default'."
@@ -496,14 +499,51 @@ cmd_status() {
     info "Recent workflow runs for '${WORKFLOW_FILE}' in ${RELEASE_REPO}"
     echo ""
 
-    if ! gh run list --workflow "$WORKFLOW_FILE" -R "$RELEASE_REPO" --limit 10 2>/dev/null; then
+    local runs
+    runs="$(gh run list --workflow "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
+        --limit 20 \
+        --json databaseId,status,conclusion,displayTitle,createdAt,event 2>/dev/null)" || {
         warn "No workflow runs found, or workflow '${WORKFLOW_FILE}' does not exist."
         echo ""
         info "Available workflows in ${RELEASE_REPO}:"
-        if ! gh workflow list -R "$RELEASE_REPO" 2>/dev/null; then
-            die "Cannot access repository ${RELEASE_REPO}. Check permissions."
+        gh workflow list -R "$RELEASE_REPO" 2>/dev/null || die "Cannot access repository ${RELEASE_REPO}. Check permissions."
+        return
+    }
+
+    if [[ -z "$runs" || "$runs" == "[]" ]]; then
+        info "No runs found"
+        return
+    fi
+
+    # Aplicar filtro opcional por nombre de paquete
+    if [[ -n "$filter" ]]; then
+        runs="$(echo "$runs" | jq -c --arg f "$filter" '[.[] | select(.displayTitle | test($f; "i"))]' 2>/dev/null || true)"
+        if [[ -z "$runs" || "$runs" == "[]" ]]; then
+            info "No runs found for '${filter}'"
+            return
         fi
     fi
+
+    echo ""
+    printf "  %-20s %-10s %-10s %s\n" "PACKAGE" "STATUS" "RESULT" "DATE"
+    echo "  $(printf '%*s' 60 '' | tr ' ' '-')"
+
+    echo "$runs" | jq -r '.[] | [
+        .displayTitle,
+        .status,
+        (.conclusion // "in_progress"),
+        (.createdAt[0:10] // "?")
+    ] | @tsv' 2>/dev/null | while IFS=$'\t' read -r title status conclusion date; do
+        icon="?"
+        case "$conclusion" in
+            success) icon="✅" ;;
+            failure) icon="❌" ;;
+            skipped) icon="⏭️" ;;
+            in_progress|null) icon="🔄" ;;
+            *) icon="❓" ;;
+        esac
+        printf "  %-20s %-10s %-10s %s\n" "$title" "$status" "${icon}" "$date"
+    done
 }
 
 # ─── Command: cache ──────────────────────────────────────────────────────────────
@@ -566,8 +606,9 @@ ${BOLD}Commands:${NC}
       If no file is given, shows all artifacts in output/ via fzf
       Never uses pacman -U — purely local extraction
 
-  status
-      Show the 10 most recent runs of the build workflow.
+  status [<package>]
+      Show recent workflow runs (last 20).
+      If a package name is given, filter runs by it.
 
   cache info
       Show cache statistics (size, age, packages cached).
@@ -653,7 +694,7 @@ main() {
             cmd_subinstall "$@"
             ;;
         status)
-            cmd_status
+            cmd_status "$@"
             ;;
         *)
             err "Unknown command: ${command}"
