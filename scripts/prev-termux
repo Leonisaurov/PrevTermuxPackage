@@ -31,6 +31,11 @@ if [[ -z "$WORKFLOW_REF" ]]; then
 fi
 readonly WORKFLOW_REF
 
+# ─── Install paths (configurable via env) ────────────────────────────────────────
+
+PREV_TERMUX_INSTALL_DIR="${PREV_TERMUX_INSTALL_DIR:-${HOME}/.local/opt}"
+PREV_TERMUX_BIN_DIR="${PREV_TERMUX_BIN_DIR:-${HOME}/.local/bin}"
+
 # ─── Source discover library (required) ─────────────────────────────────────────
 
 if [[ ! -f "$LIB_DIR/discover.sh" ]]; then
@@ -91,6 +96,53 @@ Install them with:
   • Or run 'gh repo set-default' inside a git clone of your repository"
     fi
     ok "Release repository: ${RELEASE_REPO}"
+}
+
+# ─── Install helpers ────────────────────────────────────────────────────────────
+
+extract_artifact() {
+    local artifact="$1"      # Ruta al .pkg.tar.xz
+    local pkg="$2"           # Nombre del paquete
+    local version="$3"       # Versión
+    local install_dir="${PREV_TERMUX_INSTALL_DIR:-${HOME}/.local/opt}"
+    local bin_dir="${PREV_TERMUX_BIN_DIR:-${HOME}/.local/bin}"
+    local pkg_versioned="${pkg}-${version}"
+    local target="${install_dir}/${pkg_versioned}"
+
+    # Verificar si ya está instalado
+    if [[ -d "$target" ]]; then
+        info "Package '${pkg_versioned}' is already installed at:"
+        echo "  ${target}"
+        if [[ -f "${bin_dir}/${pkg_versioned}" ]]; then
+            echo "  Symlink: ${bin_dir}/${pkg_versioned}"
+        fi
+        return 0
+    fi
+
+    info "Extracting '${pkg_versioned}' to ${target}..."
+    mkdir -p "$target"
+
+    if tar -xf "$artifact" --strip-components=5 -C "$target" 2>/dev/null; then
+        : # success
+    elif tar -xf "$artifact" --strip-components=4 -C "$target" 2>/dev/null; then
+        warn "Used --strip-components=4 (some directory levels may differ)"
+    elif tar -xf "$artifact" -C "$target" 2>/dev/null; then
+        warn "Used no --strip-components (directory structure preserved as-is)"
+    else
+        die "Failed to extract ${artifact}"
+    fi
+
+    # Crear symlink si existe binario
+    if [[ -f "${target}/bin/${pkg}" ]]; then
+        mkdir -p "$bin_dir"
+        ln -sf "${target}/bin/${pkg}" "${bin_dir}/${pkg_versioned}"
+        ok "Installed: ${bin_dir}/${pkg_versioned} → ${target}/bin/${pkg}"
+    else
+        warn "No bin/${pkg} found in extracted package. Files extracted to: ${target}"
+        if [[ -d "${target}/bin" ]]; then
+            ls -la "${target}/bin/" 2>/dev/null || true
+        fi
+    fi
 }
 
 # ─── Command: list ───────────────────────────────────────────────────────────────
@@ -325,6 +377,142 @@ cmd_build() {
     fi
 }
 
+# ─── Command: install ───────────────────────────────────────────────────────────
+# Usage: prev-termux install <package> [--commit <sha>] [--refresh]
+#        prev-termux install <file.pkg.tar.xz>
+#
+# Installs a Termux package to ~/.local/opt/<pkg>-<version>/ and creates a
+# versioned symlink in ~/.local/bin/<pkg>-<version>.
+#
+cmd_install() {
+    local pkg_or_file="$1"
+    [[ -z "$pkg_or_file" ]] && die "Usage: prev-termux install <package> [--commit <sha>] [--refresh]"
+
+    # ── Si es un archivo local ──────────────────────────────────────────────
+    if [[ -f "$pkg_or_file" ]]; then
+        local filename
+        filename="$(basename "$pkg_or_file")"
+        # Extraer nombre y versión del nombre del archivo
+        # Formato esperado: <pkg>-<version>-<revision>-<arch>.pkg.tar.xz
+        local pkg version
+        pkg="$(echo "$filename" | sed -E 's/-[0-9]+(\.[0-9]+)*.*//')"
+        version="$(echo "$filename" | sed -E 's/^[^-]+-([0-9]+(\.[0-9]+)*).*/\1/')"
+
+        if [[ -z "$pkg" || -z "$version" ]]; then
+            # Fallback: usar nombre del archivo sin extensión
+            pkg="${pkg_or_file%.pkg.tar.*}"
+            pkg="${pkg##*/}"
+            version="unknown"
+        fi
+
+        extract_artifact "$pkg_or_file" "$pkg" "$version"
+        return
+    fi
+
+    # ── Es un nombre de paquete ─────────────────────────────────────────────
+    local package="$pkg_or_file"
+    local commit_sha=""
+    local refresh=0
+
+    shift
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --commit) [[ -z "${2:-}" ]] && die "--commit requires a SHA"; commit_sha="$2"; shift 2 ;;
+            --commit=*) commit_sha="${1#*=}"; shift ;;
+            --refresh) refresh=1; shift ;;
+            *) die "Unknown argument: $1" ;;
+        esac
+    done
+
+    # Detectar repo
+    local repo
+    repo="${GITHUB_REPOSITORY:-}"
+    if [[ -z "$repo" ]] && command -v gh &>/dev/null; then
+        repo="$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || true)"
+    fi
+    if [[ -z "$repo" ]]; then
+        die "Could not determine GitHub repository. Set GITHUB_REPOSITORY env var."
+    fi
+
+    local version="" sha="" short_sha="" tag=""
+
+    # ── Modo directo (--commit) ──────────────────────────────────────────────
+    if [[ -n "$commit_sha" ]]; then
+        sha="$commit_sha"
+        short_sha="${sha:0:7}"
+        info "Extracting version for commit ${short_sha}..."
+        version="$(extract_version "$sha" "$package")" || \
+            die "Failed to extract version for commit ${sha} package ${package}"
+        tag="${package}-${version}-${short_sha}"
+        ok "Version: ${version}, Tag: ${tag}"
+    else
+        # ── Modo interactivo (fzf) ───────────────────────────────────────────
+        info "Loading available versions..."
+        local selected
+        selected="$(fzf_select "$package" "$refresh")" || die "Version selection cancelled or failed"
+        IFS='|' read -r version sha _ short_sha <<< "$selected"
+        tag="${package}-${version}-${short_sha}"
+        ok "Selected: ${tag}"
+    fi
+
+    # ── Verificar release existente ──────────────────────────────────────────
+    local artifact_file=""
+    if gh release view "$tag" -R "$repo" &>/dev/null; then
+        info "Release '${tag}' found."
+        # Buscar artifact descargado
+        mkdir -p "${PWD}/output"
+        local cached_files=()
+        shopt -s nullglob
+        cached_files=("${PWD}/output/"${package}-${version}-*.pkg.tar.*)
+        shopt -u nullglob
+
+        if [[ ${#cached_files[@]} -gt 0 && -f "${cached_files[0]}" ]]; then
+            artifact_file="${cached_files[0]}"
+            ok "Using cached artifact: ${artifact_file}"
+        else
+            info "Downloading artifact..."
+            gh release download "$tag" -R "$repo" --dir "${PWD}/output" --skip-existing 2>&1 || true
+            shopt -s nullglob
+            cached_files=("${PWD}/output/"${package}-${version}-*.pkg.tar.*)
+            shopt -u nullglob
+            if [[ ${#cached_files[@]} -gt 0 ]]; then
+                artifact_file="${cached_files[0]}"
+            fi
+        fi
+    else
+        # Buscar por versión
+        info "Tag '${tag}' not found. Searching for releases matching '${package}-${version}-*'..."
+        local matching_tag
+        matching_tag="$(gh release list -R "$repo" --limit 50 --json tagName --jq '.[].tagName' 2>/dev/null | grep "^${package}-${version}-" | head -1 || true)"
+        if [[ -n "$matching_tag" ]]; then
+            info "Found matching release: ${matching_tag}"
+            tag="$matching_tag"
+            mkdir -p "${PWD}/output"
+            gh release download "$tag" -R "$repo" --dir "${PWD}/output" --skip-existing 2>&1 || true
+            shopt -s nullglob
+            cached_files=("${PWD}/output/"${package}-${version}-*.pkg.tar.*)
+            shopt -u nullglob
+            if [[ ${#cached_files[@]} -gt 0 ]]; then
+                artifact_file="${cached_files[0]}"
+            fi
+        else
+            # Disparar GHA
+            info "No existing release found. Triggering build..."
+            gh workflow run build-old-package.yml -R "$repo" \
+                -f package_name="$package" -f git_ref="$sha"
+            ok "Build triggered. Run 'prev-termux status' to track progress, then retry install."
+            return
+        fi
+    fi
+
+    # ── Extraer artifact ───────────────────────────────────────────────────
+    if [[ -f "$artifact_file" ]]; then
+        extract_artifact "$artifact_file" "$package" "$version"
+    else
+        die "No artifact found for ${package} ${version}"
+    fi
+}
+
 # ─── Command: status ─────────────────────────────────────────────────────────────
 # Usage: prev-termux status
 #
@@ -403,6 +591,15 @@ ${BOLD}Commands:${NC}
       --commit <sha>  Direct mode: skip fzf, build the exact commit SHA.
       --refresh       Force re-discovery, ignoring cache
 
+  install <package> [--commit <sha>] [--refresh]
+      Download/extract package to ~/.local/opt/<pkg>-<version>/
+      Creates symlink in ~/.local/bin/<pkg>-<version>
+      Never uses pacman -U
+      If --commit is omitted, opens interactive version selector (fzf)
+
+  install <file.pkg.tar.xz>
+      Extract a local .pkg.tar.xz file directly
+
   status
       Show the 10 most recent runs of the build workflow.
 
@@ -422,6 +619,9 @@ ${BOLD}Examples:${NC}
   prev-termux build nodejs
   prev-termux build libfoo --commit a1b2c3d
   prev-termux build nodejs --refresh
+  prev-termux install bat
+  prev-termux install bat --commit a1b2c3d
+  prev-termux install ./output/bat-0.24.0-0-aarch64.pkg.tar.xz
   prev-termux cache info
   prev-termux cache clear
   prev-termux cache clear python
@@ -482,6 +682,10 @@ main() {
         build)
             [[ $# -lt 1 ]] && die "Usage: prev-termux build <package> [--commit <sha>] [--refresh]"
             cmd_build "$@"
+            ;;
+        install)
+            [[ $# -lt 1 ]] && die "Usage: prev-termux install <package> [--commit <sha>] [--refresh]"
+            cmd_install "$@"
             ;;
         status)
             cmd_status
