@@ -189,7 +189,7 @@ jobs:
           git clone --depth=1 --filter=blob:none --sparse \
             https://github.com/termux/termux-packages.git /tmp/termux-master
           cd /tmp/termux-master
-          git sparse-checkout set scripts
+          git sparse-checkout set scripts packages/termux-keyring
           
           echo "Downloading build-package.sh..."
           curl -sL -o build-package.sh \
@@ -204,7 +204,12 @@ jobs:
           cp build-package.sh "${GITHUB_WORKSPACE}/termux-packages/build-package.sh"
           rm -rf "${GITHUB_WORKSPACE}/termux-packages/scripts"
           cp -r scripts "${GITHUB_WORKSPACE}/termux-packages/scripts"
-          
+
+          # Copiar claves GPG (termux-keyring)
+          rm -rf "${GITHUB_WORKSPACE}/termux-packages/packages/termux-keyring"
+          cp -r packages/termux-keyring \
+            "${GITHUB_WORKSPACE}/termux-packages/packages/termux-keyring"
+
           rm -rf /tmp/termux-master
           echo "Done. Build system updated from master."
 
