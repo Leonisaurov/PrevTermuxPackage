@@ -182,18 +182,26 @@ jobs:
           echo "Extracted version: ${VERSION}"
 
       # ── 3. Compilar el paquete ──
-      - name: Download latest run-docker.sh
+      - name: Download latest run-docker.sh and profiles
         shell: bash
         run: |
-          echo "Downloading latest run-docker.sh from termux-packages master..."
+          BASE="https://raw.githubusercontent.com/termux/termux-packages/master"
+
+          echo "Downloading latest run-docker.sh..."
           curl -sL -o termux-packages/scripts/run-docker.sh \
-            "https://raw.githubusercontent.com/termux/termux-packages/master/scripts/run-docker.sh"
+            "$BASE/scripts/run-docker.sh"
           chmod +x termux-packages/scripts/run-docker.sh
 
-          # También descargar scripts auxiliares que run-docker.sh necesita
+          echo "Downloading helper scripts..."
           mkdir -p termux-packages/scripts/utils/docker
           curl -sL -o termux-packages/scripts/utils/docker/docker.sh \
-            "https://raw.githubusercontent.com/termux/termux-packages/master/scripts/utils/docker/docker.sh" 2>/dev/null || true
+            "$BASE/scripts/utils/docker/docker.sh" 2>/dev/null || true
+
+          echo "Downloading AppArmor profiles..."
+          curl -sL -o termux-packages/scripts/profile-relaxed.apparmor \
+            "$BASE/scripts/profile-relaxed.apparmor" 2>/dev/null || true
+          curl -sL -o termux-packages/scripts/profile-restricted.apparmor \
+            "$BASE/scripts/profile-restricted.apparmor" 2>/dev/null || true
 
       - name: Build package
         shell: bash
