@@ -63,6 +63,10 @@ jobs:
           ref: ${{ inputs.git_ref }}
           path: termux-packages
 
+      # Checkout PrevTermuxPackage para acceder a los scripts de parche
+      - name: Checkout PrevTermuxPackage
+        uses: actions/checkout@v4
+
       # ── Heavy build: free disk + ZRAM 16GB ──
       - name: Optimize for heavy build
         if: ${{ inputs.heavy }}
@@ -222,6 +226,13 @@ jobs:
           rm -rf /tmp/termux-master
           echo "Done. Build system updated from master."
 
+      # ── 3.5 Aplicar parches de compatibilidad para commits antiguos ──
+      - name: Apply build system patches
+        shell: bash
+        run: |
+          chmod +x ./scripts/patch-build-system.sh
+          ./scripts/patch-build-system.sh "$PWD/termux-packages"
+
       - name: Build package
         shell: bash
         working-directory: termux-packages
@@ -247,7 +258,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${{ inputs.architecture }}
-          path: termux-packages/output/*.pkg.tar.*
+          path: |
+            termux-packages/output/*.pkg.tar.*
+            termux-packages/output/*.deb
           if-no-files-found: error
 
       # ── 5. Generar tag para el release ──

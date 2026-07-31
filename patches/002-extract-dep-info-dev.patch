@@ -1,0 +1,9 @@
+--- a/scripts/build/termux_extract_dep_info.sh
++++ b/scripts/build/termux_extract_dep_info.sh
+@@ -3,4 +3,6 @@
+ termux_extract_dep_info() {
+ 	( # Do everything in a subshell to avoid variable hell outside the function
+ 	PKG="$1"
++	# Normalize *-dev packages to their parent (e.g. freetype-dev -> freetype):
++	PKG=${PKG/-dev/}
+ 	PKG_DIR="$2"
