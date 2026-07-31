@@ -182,48 +182,38 @@ jobs:
           echo "Extracted version: ${VERSION}"
 
       # ── 3. Compilar el paquete ──
-      - name: Build package
+      - name: Download latest run-docker.sh
         shell: bash
         run: |
-          cd termux-packages
+          echo "Downloading latest run-docker.sh from termux-packages master..."
+          curl -sL -o termux-packages/scripts/run-docker.sh \
+            "https://raw.githubusercontent.com/termux/termux-packages/master/scripts/run-docker.sh"
+          chmod +x termux-packages/scripts/run-docker.sh
 
-          # Nombre del contenedor
-          CONTAINER_IMAGE="ghcr.io/termux/package-builder:latest"
-          REPO_MOUNT="$PWD:/home/builder/termux-packages"
-          BUILD_CACHE_MOUNT="$HOME/.termux-build:/home/builder/.termux-build"
-          PROJECT_CACHE_MOUNT="${TMPDIR}/termux-project-cache:/home/builder/.cache"
+          # También descargar scripts auxiliares que run-docker.sh necesita
+          mkdir -p termux-packages/scripts/utils/docker
+          curl -sL -o termux-packages/scripts/utils/docker/docker.sh \
+            "https://raw.githubusercontent.com/termux/termux-packages/master/scripts/utils/docker/docker.sh" 2>/dev/null || true
 
-          # Asegurar directorios de caché
-          mkdir -p "$HOME/.termux-build" "${TMPDIR}/termux-project-cache"
-
-          # Flags comunes
-          BUILD_FLAGS="--format ${{ inputs.format }} -a ${{ inputs.architecture }}"
-
+      - name: Build package
+        shell: bash
+        working-directory: termux-packages
+        env:
+          CI: "true"
+        run: |
           if [ "${{ inputs.build_mode }}" = "full" ]; then
-            BUILD_FLAGS="$BUILD_FLAGS -F"
+            echo "Running full build (-F) for ${{ inputs.package_name }}..."
+            ./scripts/run-docker.sh ./build-package.sh \
+              --format ${{ inputs.format }} \
+              -a ${{ inputs.architecture }} \
+              -F ${{ inputs.package_name }}
           else
-            BUILD_FLAGS="$BUILD_FLAGS -I"
+            echo "Running fast build (-I) for ${{ inputs.package_name }}..."
+            ./scripts/run-docker.sh ./build-package.sh \
+              --format ${{ inputs.format }} \
+              -a ${{ inputs.architecture }} \
+              -I ${{ inputs.package_name }}
           fi
-
-          echo "Running build for ${{ inputs.package_name }}..."
-          echo "Build flags: ${BUILD_FLAGS}"
-
-          # Ejecutar build dentro del contenedor
-          docker run --rm \
-            -v "$REPO_MOUNT" \
-            -v "$BUILD_CACHE_MOUNT" \
-            -v "$PROJECT_CACHE_MOUNT" \
-            -w "/home/builder/termux-packages" \
-            --user builder \
-            "$CONTAINER_IMAGE" \
-            bash -c "
-              cd /home/builder/termux-packages && \
-              ./build-package.sh ${BUILD_FLAGS} ${{ inputs.package_name }}
-            " || {
-            rc=$?
-            echo "Build exited with code ${rc}"
-            exit $rc
-          }
 
       # ── 4. Subir artifact (antes de crear release, por si algo falla) ──
       - name: Upload artifact
