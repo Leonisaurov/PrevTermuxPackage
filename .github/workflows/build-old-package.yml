@@ -23,13 +23,16 @@ on:
           - i686
           - x86_64
       format:
-        description: "Package format"
+        description: >-
+          Package format. El build SIEMPRE compila a .deb (formato universal,
+          compatible con commits pre-2021 que no soportan pacman); al final
+          scripts/deb2pkg.sh convierte el .deb a .pkg.tar.xz.
         required: false
-        default: pacman
+        default: debian
         type: choice
         options:
-          - pacman
           - debian
+          - pacman
       build_mode:
         description: "Dependency resolution mode"
         required: false
@@ -45,7 +48,10 @@ on:
         type: boolean
 
 jobs:
-  build:
+  # ════════════════════════════════════════════════════════════════════════
+  # Job 1: build-normal — build clásico (sin prefix versionado)
+  # ════════════════════════════════════════════════════════════════════════
+  build-normal:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -70,7 +76,7 @@ jobs:
           ref: ${{ inputs.git_ref }}
           path: termux-packages
 
-      # ── Heavy build: free disk + ZRAM 16GB ──
+      # ── Heavy build: free disk + ZRAM 16GB (toggle por input `heavy`) ──
       - name: Optimize for heavy build
         if: ${{ inputs.heavy }}
         shell: bash
@@ -109,8 +115,9 @@ jobs:
             exit 1
           fi
 
-          # Extraer línea cruda de TERMUX_PKG_VERSION
-          VERSION_RAW=$(grep -oP '^TERMUX_PKG_VERSION=\K.+' "$BUILD_SH" | head -1)
+          # Extraer línea cruda de TERMUX_PKG_VERSION (regex canónica:
+          # tolera espacios iniciales y corta comentarios #)
+          VERSION_RAW=$(grep -E '^[[:space:]]*TERMUX_PKG_VERSION=' "$BUILD_SH" | head -1 | sed -E 's/^[[:space:]]*TERMUX_PKG_VERSION=//' | cut -d'#' -f1)
           if [ -z "$VERSION_RAW" ]; then
             echo "Error: could not extract TERMUX_PKG_VERSION from $BUILD_SH"
             exit 1
@@ -119,7 +126,7 @@ jobs:
           # Resolver variables ${VAR}, $VAR y ${VAR%.*} usando las definiciones del build.sh
           VERSION="$VERSION_RAW"
           # Quitar comillas
-          VERSION=$(echo "$VERSION" | tr -d '"' | tr -d "'")
+          VERSION=$(echo "$VERSION" | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//')
 
           # Extraer TODAS las definiciones del build.sh como tabla hash
           declare -A VARS
@@ -188,80 +195,40 @@ jobs:
           echo "package_version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Extracted version: ${VERSION}"
 
-      # ── 3. Compilar el paquete ──
-      - name: Fetch build system from master
+      # ── 3. Preparar build system (sparse fetch de master + parches) ──
+      - name: Prepare build system
         shell: bash
         run: |
-          echo "Cloning scripts/ from termux-packages master..."
-          git clone --depth=1 --filter=blob:none --sparse \
-            https://github.com/termux/termux-packages.git /tmp/termux-master
-          cd /tmp/termux-master
-          git sparse-checkout set scripts packages/termux-keyring packages/termux-elf-cleaner ndk-patches
-          
-          echo "Downloading build-package.sh..."
-          curl -sL -o build-package.sh \
-            "https://raw.githubusercontent.com/termux/termux-packages/master/build-package.sh"
-          chmod +x build-package.sh
+          ./scripts/gha-prepare.sh "$PWD/termux-packages"
 
-          echo "Downloading repo.json..."
-          curl -sL -o "${GITHUB_WORKSPACE}/termux-packages/repo.json" \
-            "https://raw.githubusercontent.com/termux/termux-packages/master/repo.json" 2>/dev/null || true
-          
-          echo "Replacing build system files..."
-          cp build-package.sh "${GITHUB_WORKSPACE}/termux-packages/build-package.sh"
-          rm -rf "${GITHUB_WORKSPACE}/termux-packages/scripts"
-          cp -r scripts "${GITHUB_WORKSPACE}/termux-packages/scripts"
-
-          # Copiar claves GPG (termux-keyring)
-          rm -rf "${GITHUB_WORKSPACE}/termux-packages/packages/termux-keyring"
-          cp -r packages/termux-keyring \
-            "${GITHUB_WORKSPACE}/termux-packages/packages/termux-keyring"
-
-          # Copiar build.sh moderno de termux-elf-cleaner
-          rm -rf "${GITHUB_WORKSPACE}/termux-packages/packages/termux-elf-cleaner"
-          cp -r packages/termux-elf-cleaner \
-            "${GITHUB_WORKSPACE}/termux-packages/packages/termux-elf-cleaner"
-
-          # Copiar ndk-patches modernos (con subdirectorios por versión)
-          rm -rf "${GITHUB_WORKSPACE}/termux-packages/ndk-patches"
-          cp -r ndk-patches \
-            "${GITHUB_WORKSPACE}/termux-packages/ndk-patches"
-
-          # Crear directorios vacíos que el buildorder moderno espera
-          mkdir -p "${GITHUB_WORKSPACE}/termux-packages/root-packages"
-          mkdir -p "${GITHUB_WORKSPACE}/termux-packages/x11-packages"
-
-          rm -rf /tmp/termux-master
-          echo "Done. Build system updated from master."
-
-      # ── 3.5 Aplicar parches de compatibilidad para commits antiguos ──
-      - name: Apply build system patches
+      # ── 4. Instalar herramientas de conversión ──
+      # bsdtar (libarchive-tools) y ar (binutils) son necesarios para que
+      # scripts/deb2pkg.sh convierta el .deb a .pkg.tar.xz tras el build.
+      # dpkg-deb y xz ya vienen preinstalados en ubuntu-latest.
+      - name: Install conversion tools
         shell: bash
         run: |
-          chmod +x ./scripts/patch-build-system.sh
-          ./scripts/patch-build-system.sh "$PWD/termux-packages"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libarchive-tools binutils
 
+      # ── 5. Compilar el paquete ──
+      # Pipeline: el build SIEMPRE produce .deb (formato universal, compatible
+      # con commits pre-2021) y scripts/deb2pkg.sh lo convierte a .pkg.tar.xz.
       - name: Build package
         shell: bash
-        working-directory: termux-packages
-        env:
-          CI: "true"
         run: |
-          if [ "${{ inputs.build_mode }}" = "full" ]; then
-            echo "Running full build (-F) for ${{ inputs.package_name }}..."
-            ./scripts/run-docker.sh ./build-package.sh \
-              --format ${{ inputs.format }} \
-              -a ${{ inputs.architecture }} \
-              -F ${{ inputs.package_name }}
-          else
-            echo "Running fast build (-I) for ${{ inputs.package_name }}..."
-            ./scripts/run-docker.sh ./build-package.sh \
-              --format ${{ inputs.format }} \
-              -a ${{ inputs.architecture }} \
-              -I ${{ inputs.package_name }}
-          fi
+          ./scripts/gha-build.sh \
+            --package ${{ inputs.package_name }} \
+            --git-ref ${{ inputs.git_ref }} \
+            --arch ${{ inputs.architecture }} \
+            --format ${{ inputs.format }} \
+            --build-mode ${{ inputs.build_mode }} \
+            --workdir "$PWD/termux-packages"
 
-      # ── 4. Subir artifact (antes de crear release, por si algo falla) ──
+      # ── 6. Subir artifact (ambos formatos) ──
+      # Antes de crear release, por si algo falla. Sube los .deb originales
+      # Y los .pkg.tar.xz convertidos por deb2pkg.sh.
+      # Nombre del artifact único del job build-normal (sin sufijo).
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -271,7 +238,7 @@ jobs:
             termux-packages/output/*.deb
           if-no-files-found: error
 
-      # ── 5. Generar tag para el release ──
+      # ── 7. Generar tag para el release ──
       - name: Generate release tag
         id: generate_tag
         shell: bash
@@ -280,11 +247,14 @@ jobs:
           SHA7="${SHA7:0:7}"
           SAFE_VERSION="${{ steps.get_version.outputs.package_version }}"
           SAFE_VERSION=$(echo "$SAFE_VERSION" | tr -d '"' | tr -d "'" | tr -d ' ')
+          SAFE_VERSION=$(echo "$SAFE_VERSION" | sed 's/[^a-zA-Z0-9._-]/-/g')
           TAG="${{ inputs.package_name }}-${SAFE_VERSION}-${SHA7}"
           echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Generated tag: ${TAG}"
 
-      # ── 6. Crear GitHub Release (solo si no existe ya) ──
+      # ── 8. Crear GitHub Release (solo si no existe ya) ──
+      # Adjunta AMBOS formatos: los .deb originales y los .pkg.tar.* generados
+      # por la conversión deb2pkg.sh (FILES ya los incluye explícitamente).
       - name: Create GitHub Release
         shell: bash
         env:
@@ -298,7 +268,8 @@ jobs:
             echo "Release '$TAG' already exists. Skipping creation."
           else
             PACKAGE_VERSION="${{ steps.get_version.outputs.package_version }}"
-            printf -v NOTES 'Package: %s\nVersion: %s\nArchitecture: %s\nFormat: %s\nCommit: %s' \
+            # Las notas del release indican que incluye ambos formatos
+            printf -v NOTES 'Package: %s\nVersion: %s\nArchitecture: %s\nFormat: %s\nArtifacts: .deb + .pkg.tar.xz\nCommit: %s' \
               "${{ inputs.package_name }}" \
               "${PACKAGE_VERSION}" \
               "${{ inputs.architecture }}" \
@@ -317,6 +288,258 @@ jobs:
               echo "Warning: No package files found to attach."
               gh release create "$TAG" \
                 -R "$REPO" \
+                --notes "$NOTES"
+            fi
+          fi
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Job 2: build-subversioned — build con PREFIX versionado
+  # (~/.local/opt/<pkg>-<ver>) + release propio "-subversioned".
+  # Independiente de build-normal (sin `needs`): no se bloquean entre sí.
+  # ════════════════════════════════════════════════════════════════════════
+  build-subversioned:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      package_version: ${{ steps.get_version.outputs.package_version }}
+      release_tag: ${{ steps.generate_tag.outputs.release_tag }}
+
+    steps:
+      # ── 1. Checkouts ──
+      - name: Checkout PrevTermuxPackage
+        uses: actions/checkout@v4
+
+      - name: Checkout termux-packages
+        uses: actions/checkout@v4
+        with:
+          repository: termux/termux-packages
+          ref: ${{ inputs.git_ref }}
+          path: termux-packages
+
+      # ── Heavy build: free disk + ZRAM 16GB (toggle por input `heavy`) ──
+      - name: Optimize for heavy build
+        if: ${{ inputs.heavy }}
+        shell: bash
+        run: |
+          echo "=== Heavy build optimization ==="
+          echo ""
+
+          echo "1. Freeing disk space..."
+          sudo apt remove -y dotnet-sdk* azure-cli ghc* \
+            '^llvm-*' '^google-*' '^mysql-*' '^firefox-*' 2>/dev/null || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null || true
+          echo "Disk space after cleanup:"
+          df -h /
+          echo ""
+
+          echo "2. Setting up 16GB ZRAM..."
+          sudo swapoff -a 2>/dev/null || true
+          sudo modprobe zram 2>/dev/null || true
+          echo "16G" | sudo tee /sys/block/zram0/disksize 2>/dev/null || true
+          sudo mkswap /dev/zram0 2>/dev/null || true
+          sudo swapon -p 5 /dev/zram0 2>/dev/null || true
+          echo "Memory after ZRAM:"
+          free -h
+
+      # ── 2. Extraer versión del paquete ──
+      - name: Extract package version
+        id: get_version
+        shell: bash
+        working-directory: termux-packages
+        run: |
+          PACKAGE_DIR="packages/${{ inputs.package_name }}"
+          BUILD_SH="$PACKAGE_DIR/build.sh"
+          if [ ! -f "$BUILD_SH" ]; then
+            echo "Error: build.sh not found for package '${{ inputs.package_name }}'"
+            echo "Expected path: $BUILD_SH"
+            exit 1
+          fi
+
+          # Extraer línea cruda de TERMUX_PKG_VERSION (regex canónica:
+          # tolera espacios iniciales y corta comentarios #)
+          VERSION_RAW=$(grep -E '^[[:space:]]*TERMUX_PKG_VERSION=' "$BUILD_SH" | head -1 | sed -E 's/^[[:space:]]*TERMUX_PKG_VERSION=//' | cut -d'#' -f1)
+          if [ -z "$VERSION_RAW" ]; then
+            echo "Error: could not extract TERMUX_PKG_VERSION from $BUILD_SH"
+            exit 1
+          fi
+
+          # Resolver variables ${VAR}, $VAR y ${VAR%.*} usando las definiciones del build.sh
+          VERSION="$VERSION_RAW"
+          # Quitar comillas
+          VERSION=$(echo "$VERSION" | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//')
+
+          # Extraer TODAS las definiciones del build.sh como tabla hash
+          declare -A VARS
+          while IFS='=' read -r name value; do
+            name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [[ -n "$name" && "$name" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+              VARS["$name"]="$value"
+            fi
+          done < <(grep -oP '^\s*[a-zA-Z_][a-zA-Z0-9_]*=.*' "$BUILD_SH" | head -100)
+
+          # Resolver recursivamente (máximo 20 iteraciones)
+          for i in $(seq 1 20); do
+            # Buscar ${VAR} con posibles operaciones tipo %.%
+            if [[ "$VERSION" =~ \$\{([a-zA-Z_][a-zA-Z0-9_]*)([#%]?[^}]*)?\} ]]; then
+              FULL_MATCH="${BASH_REMATCH[0]}"
+              VAR_NAME="${BASH_REMATCH[1]}"
+              VAR_OP="${BASH_REMATCH[2]:-}"
+              VAR_VALUE="${VARS[$VAR_NAME]:-}"
+
+              if [ -z "$VAR_VALUE" ]; then
+                echo "Warning: could not resolve variable $VAR_NAME" >&2
+                break
+              fi
+
+              # Limpiar comillas
+              VAR_VALUE=$(echo "$VAR_VALUE" | tr -d '"' | tr -d "'")
+
+              # Si el valor referencia otra variable, resolverla ya
+              if [[ "$VAR_VALUE" =~ \$\{([a-zA-Z_][a-zA-Z0-9_]*)([#%]?[^}]*)?\} ]]; then
+                INNER_VAR="${BASH_REMATCH[1]}"
+                INNER_OP="${BASH_REMATCH[2]:-}"
+                INNER_VAL="${VARS[$INNER_VAR]:-}"
+                if [ -n "$INNER_VAL" ]; then
+                  INNER_VAL=$(echo "$INNER_VAL" | tr -d '"' | tr -d "'")
+                  # Aplicar operación interna si existe
+                  case "$INNER_OP" in
+                    %.*) INNER_VAL="${INNER_VAL%${INNER_OP#%}}" ;;
+                    %%.*) INNER_VAL="${INNER_VAL%%${INNER_OP#%%}}" ;;
+                  esac
+                  VAR_VALUE="${VAR_VALUE//\$\{${INNER_VAR}${INNER_OP}\}/${INNER_VAL}}"
+                fi
+              fi
+
+              # Aplicar operación externa si existe (%.* es la más común)
+              case "$VAR_OP" in
+                %.*)  VAR_VALUE="${VAR_VALUE%${VAR_OP#%}}" ;;
+                %%.*) VAR_VALUE="${VAR_VALUE%%${VAR_OP#%%}}" ;;
+              esac
+
+              VERSION="${VERSION//${FULL_MATCH}/${VAR_VALUE}}"
+            elif [[ "$VERSION" =~ \$([a-zA-Z_][a-zA-Z0-9_]*) ]] && [[ "${BASH_REMATCH[0]}" != \$\{* ]]; then
+              # Formato $VAR sin llaves
+              VAR_NAME="${BASH_REMATCH[1]}"
+              VAR_VALUE="${VARS[$VAR_NAME]:-}"
+              if [ -z "$VAR_VALUE" ]; then
+                break
+              fi
+              VAR_VALUE=$(echo "$VAR_VALUE" | tr -d '"' | tr -d "'")
+              VERSION="${VERSION//\$"${VAR_NAME}"/${VAR_VALUE}}"
+            else
+              break  # No más variables
+            fi
+          done
+
+          echo "package_version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Extracted version: ${VERSION}"
+
+      # ── 3. Preparar build system (sparse fetch de master + parches) ──
+      - name: Prepare build system
+        shell: bash
+        run: |
+          ./scripts/gha-prepare.sh "$PWD/termux-packages"
+
+      # ── 4. Instalar herramientas de conversión ──
+      # bsdtar (libarchive-tools) y ar (binutils) son necesarios para que
+      # scripts/deb2pkg.sh convierta el .deb a .pkg.tar.xz tras el build.
+      # dpkg-deb y xz ya vienen preinstalados en ubuntu-latest.
+      - name: Install conversion tools
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libarchive-tools binutils
+
+      # ── 5. Compilar con PREFIX versionado ──
+      # gha-build.sh --subversioned exporta:
+      #   TERMUX_PREFIX_OVERRIDE=/data/data/com.termux/files/home/.local/opt/<pkg>-<ver>
+      #   TERMUX_DOCKER_EXEC_EXTRA_ARGS="--env TERMUX_PREFIX_OVERRIDE=..."
+      # (run-docker.sh inyecta TERMUX_DOCKER_EXEC_EXTRA_ARGS al docker exec)
+      # Pipeline: igual que build-normal — el build SIEMPRE produce .deb
+      # (universal) y deb2pkg.sh lo convierte a .pkg.tar.xz al final.
+      - name: Build package (subversioned)
+        shell: bash
+        run: |
+          ./scripts/gha-build.sh \
+            --package ${{ inputs.package_name }} \
+            --git-ref ${{ inputs.git_ref }} \
+            --arch ${{ inputs.architecture }} \
+            --format ${{ inputs.format }} \
+            --build-mode ${{ inputs.build_mode }} \
+            --subversioned \
+            --workdir "$PWD/termux-packages"
+
+      # ── 6. Subir artifact (ambos formatos, sufijo -subversioned) ──
+      # Sube los .deb originales Y los .pkg.tar.xz convertidos por deb2pkg.sh.
+      # Nombre del artifact único del job build-subversioned (sufijo -subversioned).
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${{ inputs.architecture }}-subversioned
+          path: |
+            termux-packages/output/*.pkg.tar.*
+            termux-packages/output/*.deb
+          if-no-files-found: error
+
+      # ── 7. Generar tag para el release (sufijo -subversioned) ──
+      - name: Generate release tag
+        id: generate_tag
+        shell: bash
+        run: |
+          SHA7="${{ inputs.git_ref }}"
+          SHA7="${SHA7:0:7}"
+          SAFE_VERSION="${{ steps.get_version.outputs.package_version }}"
+          SAFE_VERSION=$(echo "$SAFE_VERSION" | tr -d '"' | tr -d "'" | tr -d ' ')
+          SAFE_VERSION=$(echo "$SAFE_VERSION" | sed 's/[^a-zA-Z0-9._-]/-/g')
+          TAG="${{ inputs.package_name }}-${SAFE_VERSION}-${SHA7}-subversioned"
+          echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Generated tag: ${TAG}"
+
+      # ── 8. Crear GitHub Release "Subversioned" (solo si no existe ya) ──
+      # Adjunta AMBOS formatos: los .deb originales y los .pkg.tar.* generados
+      # por la conversión deb2pkg.sh (FILES ya los incluye explícitamente).
+      - name: Create GitHub Release (Subversioned)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="${{ github.repository }}"
+          TAG="${{ steps.generate_tag.outputs.release_tag }}"
+          SHA7="${{ inputs.git_ref }}"
+          SHA7="${SHA7:0:7}"
+
+          # Verificar si el release ya existe
+          if gh release view "$TAG" -R "$REPO" &>/dev/null; then
+            echo "Release '$TAG' already exists. Skipping creation."
+          else
+            PACKAGE_VERSION="${{ steps.get_version.outputs.package_version }}"
+            # Las notas del release indican que incluye ambos formatos
+            printf -v NOTES 'Package: %s\nVersion: %s\nArchitecture: %s\nFormat: %s\nArtifacts: .deb + .pkg.tar.xz\nCommit: %s\nBuild: subversioned\nPrefix: %s' \
+              "${{ inputs.package_name }}" \
+              "${PACKAGE_VERSION}" \
+              "${{ inputs.architecture }}" \
+              "${{ inputs.format }}" \
+              "${{ inputs.git_ref }}" \
+              "/data/data/com.termux/files/home/.local/opt/${{ inputs.package_name }}-${PACKAGE_VERSION}"
+            TITLE="Subversioned: ${{ inputs.package_name }} ${PACKAGE_VERSION} (${SHA7})"
+
+            shopt -s nullglob
+            FILES=("${GITHUB_WORKSPACE}/termux-packages/output/"*.pkg.tar.* "${GITHUB_WORKSPACE}/termux-packages/output/"*.deb)
+
+            if [ ${#FILES[@]} -gt 0 ]; then
+              echo "Creating release '$TAG' with ${#FILES[@]} artifact(s)..."
+              gh release create "$TAG" "${FILES[@]}" \
+                -R "$REPO" \
+                --title "$TITLE" \
+                --notes "$NOTES"
+            else
+              echo "Warning: No package files found to attach."
+              gh release create "$TAG" \
+                -R "$REPO" \
+                --title "$TITLE" \
                 --notes "$NOTES"
             fi
           fi
