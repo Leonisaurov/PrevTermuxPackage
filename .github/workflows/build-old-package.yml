@@ -55,17 +55,20 @@ jobs:
       release_tag: ${{ steps.generate_tag.outputs.release_tag }}
 
     steps:
-      # ── 1. Checkout de termux-packages en el commit exacto ──
+      # ── 1. Checkouts ──
+      # Checkout PrevTermuxPackage para acceder a los scripts de parche
+      # PRIMERO (en raíz) para que no borre termux-packages/
+      - name: Checkout PrevTermuxPackage
+        uses: actions/checkout@v4
+
+      # Checkout de termux-packages en el commit exacto
+      # SEGUNDO (con path:) para que solo toque su propio directorio
       - name: Checkout termux-packages
         uses: actions/checkout@v4
         with:
           repository: termux/termux-packages
           ref: ${{ inputs.git_ref }}
           path: termux-packages
-
-      # Checkout PrevTermuxPackage para acceder a los scripts de parche
-      - name: Checkout PrevTermuxPackage
-        uses: actions/checkout@v4
 
       # ── Heavy build: free disk + ZRAM 16GB ──
       - name: Optimize for heavy build
