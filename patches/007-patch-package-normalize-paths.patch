@@ -9,12 +9,14 @@
  		test -f "$patch" && sed \
  			-e "s%\@TERMUX_APP_PACKAGE\@%${TERMUX_APP_PACKAGE}%g" \
  			-e "s%\@TERMUX_BASE_DIR\@%${TERMUX_BASE_DIR}%g" \
-@@ -31,6 +33,8 @@
+@@ -31,7 +33,9 @@
  			-e "s%\@TERMUX_ENV__S_TERMUX_API_APP\@%${TERMUX_ENV__S_TERMUX_API_APP}%g" \
  			-e "s%\@TERMUX_ENV__S_TERMUX_ROOTFS\@%${TERMUX_ENV__S_TERMUX_ROOTFS}%g" \
  			-e "s%\@TERMUX_ENV__S_TERMUX_EXEC\@%${TERMUX_ENV__S_TERMUX_EXEC}%g" \
+-			"$patch" | patch --silent -p1
 +			-e "s%^--- \.\./[^/]*/%--- ./%g" \
 +			-e "s%^+++ \.\./[^/]*/%+++ ./%g" \
- 			"$patch" | patch --silent -p1
++			"$patch" | patch -p1
  	done
  	shopt -u nullglob
+ }
