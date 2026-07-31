@@ -196,7 +196,7 @@ jobs:
           git clone --depth=1 --filter=blob:none --sparse \
             https://github.com/termux/termux-packages.git /tmp/termux-master
           cd /tmp/termux-master
-          git sparse-checkout set scripts packages/termux-keyring packages/termux-elf-cleaner
+          git sparse-checkout set scripts packages/termux-keyring packages/termux-elf-cleaner ndk-patches
           
           echo "Downloading build-package.sh..."
           curl -sL -o build-package.sh \
@@ -221,6 +221,11 @@ jobs:
           rm -rf "${GITHUB_WORKSPACE}/termux-packages/packages/termux-elf-cleaner"
           cp -r packages/termux-elf-cleaner \
             "${GITHUB_WORKSPACE}/termux-packages/packages/termux-elf-cleaner"
+
+          # Copiar ndk-patches modernos (con subdirectorios por versión)
+          rm -rf "${GITHUB_WORKSPACE}/termux-packages/ndk-patches"
+          cp -r ndk-patches \
+            "${GITHUB_WORKSPACE}/termux-packages/ndk-patches"
 
           # Crear directorios vacíos que el buildorder moderno espera
           mkdir -p "${GITHUB_WORKSPACE}/termux-packages/root-packages"
