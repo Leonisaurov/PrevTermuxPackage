@@ -1,0 +1,12 @@
+--- a/scripts/build/termux_step_start_build.sh
++++ b/scripts/build/termux_step_start_build.sh
+@@ -85,7 +85,8 @@
+ 	termux_step_setup_pkg_config_libdir
+ 
+ 	local TERMUX_PKG_BUILDDIR_ORIG="$TERMUX_PKG_BUILDDIR"
+-	if [ "$TERMUX_PKG_BUILD_IN_SRC" = "true" ]; then
++	if [ "$TERMUX_PKG_BUILD_IN_SRC" = "true" ] || [ "$TERMUX_PKG_BUILD_IN_SRC" = "yes" ]; then
++		# Legacy compatibility: build.sh files from 2018 use "yes" instead of "true"
+ 		TERMUX_PKG_BUILDDIR=$TERMUX_PKG_SRCDIR
+ 	fi
+ 	if [ "$TERMUX_PKG_BUILD_MULTILIB" = "true" ] && [ "$TERMUX_PKG_BUILD_ONLY_MULTILIB" = "false" ] && ([ "$TERMUX_PKG_BUILD_IN_SRC" = "true" ] || [ "$TERMUX_PKG_MULTILIB_BUILDDIR" = "$TERMUX_PKG_BUILDDIR" ]); then

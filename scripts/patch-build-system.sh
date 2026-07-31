@@ -12,46 +12,54 @@ echo "=== Aplicando parches al build system ==="
 
 # 1. Parche buildorder.py (-dev → padre)
 if ! grep -q "re.sub('-dev\$', '', dependency_value)" "$REPO_DIR/scripts/buildorder.py"; then
-    echo "[1/6] Aplicando parche buildorder: -dev → padre"
+    echo "[1/7] Aplicando parche buildorder: -dev → padre"
     patch -p1 -d "$REPO_DIR" < "$PATCHES_DIR/001-buildorder-dev-mapping.patch"
 else
-    echo "[1/6] Parche buildorder ya aplicado, saltando"
+    echo "[1/7] Parche buildorder ya aplicado, saltando"
 fi
 
 # 2. Parche extract_dep_info.sh (normalización -dev)
 if ! grep -q 'PKG=${PKG/-dev/}' "$REPO_DIR/scripts/build/termux_extract_dep_info.sh"; then
-    echo "[2/6] Aplicando parche extract_dep_info: normalización -dev"
+    echo "[2/7] Aplicando parche extract_dep_info: normalización -dev"
     patch -p1 -d "$REPO_DIR" < "$PATCHES_DIR/002-extract-dep-info-dev.patch"
 else
-    echo "[2/6] Parche extract_dep_info ya aplicado, saltando"
+    echo "[2/7] Parche extract_dep_info ya aplicado, saltando"
 fi
 
 # 3. Parche setup_variables.sh (source de python/libllvm tolerante)
 if ! grep -q "_MAJOR_VERSION:-\|_MAJOR_VERSION:-\|# Extract _MAJOR_VERSION without sourcing" "$REPO_DIR/scripts/build/termux_step_setup_variables.sh"; then
-    echo "[3/6] Aplicando parche setup_variables: source tolerante"
+    echo "[3/7] Aplicando parche setup_variables: source tolerante"
     patch -p1 -d "$REPO_DIR" < "$PATCHES_DIR/003-setup-vars-fallback.patch"
 else
-    echo "[3/6] Parche setup_variables ya aplicado, saltando"
+    echo "[3/7] Parche setup_variables ya aplicado, saltando"
 fi
 
 # 4. Parche make_install.sh (setup rust automático para build.sh viejos)
 if ! grep -q "Legacy compatibility: old build.sh files don't call termux_setup_rust" "$REPO_DIR/scripts/build/termux_step_make_install.sh"; then
-    echo "[4/6] Aplicando parche make_install: termux_setup_rust automático"
+    echo "[4/7] Aplicando parche make_install: termux_setup_rust automático"
     patch -p1 -d "$REPO_DIR" < "$PATCHES_DIR/004-make-install-rust.patch"
 else
-    echo "[4/6] Parche make_install ya aplicado, saltando"
+    echo "[4/7] Parche make_install ya aplicado, saltando"
 fi
 
 # 5. Parche termux_setup_rust.sh (extraccion con grep + fallback)
 if ! grep -q "Legacy compatibility: extract version with grep" "$REPO_DIR/scripts/build/setup/termux_setup_rust.sh"; then
-    echo "[5/6] Aplicando parche setup_rust: extraccion con grep + fallback"
+    echo "[5/7] Aplicando parche setup_rust: extraccion con grep + fallback"
     patch -p1 -d "$REPO_DIR" < "$PATCHES_DIR/005-termux-setup-rust.patch"
 else
-    echo "[5/6] Parche setup_rust ya aplicado, saltando"
+    echo "[5/7] Parche setup_rust ya aplicado, saltando"
 fi
 
-# 6. Normalizar variables legacy en TODOS los build.sh (idempotente)
-echo "[6/6] Normalizando variables legacy en build.sh..."
+# 6. Parche start_build.sh (BUILD_IN_SRC acepta yes/true)
+if ! grep -q 'Legacy compatibility: build.sh files from 2018 use "yes" instead of "true"' "$REPO_DIR/scripts/build/termux_step_start_build.sh"; then
+    echo "[6/7] Aplicando parche start_build: BUILD_IN_SRC tolerante (yes/true)"
+    patch -p1 -d "$REPO_DIR" < "$PATCHES_DIR/006-start-build-build-in-src.patch"
+else
+    echo "[6/7] Parche start_build ya aplicado, saltando"
+fi
+
+# 7. Normalizar variables legacy en TODOS los build.sh (idempotente)
+echo "[7/7] Normalizando variables legacy en build.sh..."
 find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     -name build.sh 2>/dev/null | while read -r f; do
     sed -i \
