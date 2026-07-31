@@ -215,6 +215,10 @@ jobs:
           cp -r packages/termux-elf-cleaner \
             "${GITHUB_WORKSPACE}/termux-packages/packages/termux-elf-cleaner"
 
+          # Crear directorios vacíos que el buildorder moderno espera
+          mkdir -p "${GITHUB_WORKSPACE}/termux-packages/root-packages"
+          mkdir -p "${GITHUB_WORKSPACE}/termux-packages/x11-packages"
+
           rm -rf /tmp/termux-master
           echo "Done. Build system updated from master."
 
