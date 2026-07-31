@@ -196,7 +196,7 @@ jobs:
           git clone --depth=1 --filter=blob:none --sparse \
             https://github.com/termux/termux-packages.git /tmp/termux-master
           cd /tmp/termux-master
-          git sparse-checkout set scripts packages/termux-keyring packages/termux-elf-cleaner packages/rust ndk-patches
+          git sparse-checkout set scripts packages/termux-keyring packages/termux-elf-cleaner ndk-patches
           
           echo "Downloading build-package.sh..."
           curl -sL -o build-package.sh \
@@ -221,11 +221,6 @@ jobs:
           rm -rf "${GITHUB_WORKSPACE}/termux-packages/packages/termux-elf-cleaner"
           cp -r packages/termux-elf-cleaner \
             "${GITHUB_WORKSPACE}/termux-packages/packages/termux-elf-cleaner"
-
-          # Copiar packages/rust moderno (termux_setup_rust lo sourcea para la version del toolchain)
-          rm -rf "${GITHUB_WORKSPACE}/termux-packages/packages/rust"
-          cp -r packages/rust \
-            "${GITHUB_WORKSPACE}/termux-packages/packages/rust"
 
           # Copiar ndk-patches modernos (con subdirectorios por versión)
           rm -rf "${GITHUB_WORKSPACE}/termux-packages/ndk-patches"

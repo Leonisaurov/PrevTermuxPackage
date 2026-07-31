@@ -1,0 +1,17 @@
+--- a/scripts/build/setup/termux_setup_rust.sh
++++ b/scripts/build/setup/termux_setup_rust.sh
+@@ -24,7 +24,13 @@
+ 	fi
+ 
+ 	if [[ -z "${TERMUX_RUST_VERSION-}" ]]; then
+-		TERMUX_RUST_VERSION=$(. "${TERMUX_SCRIPTDIR}"/packages/rust/build.sh; echo ${TERMUX_PKG_VERSION})
++		# Legacy compatibility: extract version with grep instead of sourcing
++		# (old commits may not have packages/rust/build.sh, or have executable code)
++		TERMUX_RUST_VERSION="$(grep -oP '^TERMUX_PKG_VERSION=\K.+' \
++			"${TERMUX_SCRIPTDIR}/packages/rust/build.sh" 2>/dev/null | head -1 \
++			| tr -d '"' | tr -d "'" | tr -d ' ')"
++		# Fallback to a stable toolchain if unavailable
++		TERMUX_RUST_VERSION="${TERMUX_RUST_VERSION:-1.75.0}"
+ 	fi
+ 	if [[ "${TERMUX_RUST_VERSION}" == *"~beta"* ]]; then
+ 		TERMUX_RUST_VERSION="beta"
