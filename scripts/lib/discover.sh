@@ -27,6 +27,14 @@ export PREV_TERMUX_CACHE_TTL="${PREV_TERMUX_CACHE_TTL:-604800}"
 export PREV_TERMUX_REPO_FETCH_INTERVAL="${PREV_TERMUX_REPO_FETCH_INTERVAL:-86400}"
 
 
+# ─── Source librería canónica de extracción de versión (misma carpeta) ───────
+# Proporciona version_extract <build_sh_file> (ver version-extract.sh).
+_VE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$_VE_DIR/version-extract.sh"
+unset _VE_DIR
+
+
 # ─── get_cache_dir ─────────────────────────────────────────────────────────────
 # Retorna el directorio base de caché, creándolo si es necesario.
 #
@@ -464,20 +472,23 @@ extract_version() {
         return 1
     fi
 
-    local version_raw
-    version_raw="$(echo "$build_sh_content" | grep "^TERMUX_PKG_VERSION=" | head -1 | cut -d= -f2 || true)"
+    # Delegar en la función canónica version_extract (version-extract.sh).
+    # Escribimos el contenido a un archivo temporal porque version_extract
+    # trabaja sobre un path de build.sh.
+    local tmp
+    tmp="$(mktemp "${TMPDIR}/prev-termux-version.XXXXXX")"
+    echo "$build_sh_content" > "$tmp"
 
-    if [[ -z "$version_raw" ]]; then
-        echo "Error: could not extract TERMUX_PKG_VERSION for commit '${commit_hash}' package '${pkg}'" >&2
-        return 1
+    local version
+    if version="$(version_extract "$tmp")"; then
+        rm -f "$tmp"
+        echo "$version"
+        return 0
     fi
 
-    # Intentar resolver variables si las hay
-    local version
-    version="$(resolve_version_from_buildsh "$version_raw" "$build_sh_content")" || version="$version_raw"
-
-    echo "$version"
-    return 0
+    rm -f "$tmp"
+    echo "Error: could not extract TERMUX_PKG_VERSION for commit '${commit_hash}' package '${pkg}'" >&2
+    return 1
 }
 
 

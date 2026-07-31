@@ -1,0 +1,115 @@
+--- a/build-package.sh
++++ b/build-package.sh
+@@ -445,6 +445,104 @@
+ 	esac
+ 	export TERMUX_ARCH
+ fi
++if [[ -n "${TERMUX_PREFIX_OVERRIDE:-}" ]]; then
++	# Legacy compatibility: subversioned builds allow TERMUX_PREFIX_OVERRIDE
++	# This override runs after properties.sh validated the standard prefix and
++	# after termux-setup-package-manager was sourced, but before
++	# termux_step_setup_variables. The versioned prefix therefore bypasses the
++	# validator (which requires the $TERMUX__HOME/$ROOTFS/usr layout) and all
++	# the variables re-derived below are used by the rest of the build.
++	echo "INFO: TERMUX_PREFIX_OVERRIDE is set - building into '$TERMUX_PREFIX_OVERRIDE'"
++	# Remember the real device prefix (/data/data/com.termux/files/usr) before
++	# re-deriving the prefix variables below.
++	TERMUX_PREFIX_OVERRIDE_REAL="$TERMUX_PREFIX_CLASSICAL"
++	termux_build_props__set_termux_prefix_dir_and_sub_variables "$TERMUX_PREFIX_OVERRIDE" "true"
++	# Keep the classical (massage/package) paths aligned with the versioned
++	# prefix so the archive contains the versioned directory tree.
++	TERMUX_PREFIX_CLASSICAL="$TERMUX_PREFIX_OVERRIDE"
++	TERMUX__PREFIX_CLASSICAL="$TERMUX_PREFIX_OVERRIDE"
++	export TERMUX_PREFIX TERMUX__PREFIX TERMUX_PREFIX_CLASSICAL TERMUX__PREFIX_CLASSICAL TERMUX_PREFIX_OVERRIDE_REAL
++	# Create the base directory tree under the versioned prefix.
++	mkdir -p "$TERMUX_PREFIX_OVERRIDE"/{bin,etc,include,lib,libexec,opt,share,var}
++	# Bootstrap: make the real system base visible under the versioned prefix.
++	# In fast (-I) mode dependencies are installed into the REAL prefix while
++	# the build compiles against the versioned prefix; exposing the real base
++	# as symlinks lets configure/compilers find installed dependencies. These
++	# are symlinks only - the massagedir/DESTDIR is separate, so the produced
++	# package never contains this bootstrap.
++	# NOTE: cp -as creates symlinks and writing through one modifies the real
++	# base file (write-through). This is bounded: the build writes into
++	# DESTDIR/massagedir, a separate tree, never into the versioned prefix,
++	# and the bootstrap is limited to the directories the compiler/configure
++	# actually reads (bin, etc, include, lib, libexec, share, var - only those
++	# that exist in the real prefix).
++	if [[ -d "$TERMUX_PREFIX_OVERRIDE_REAL" ]]; then
++		for d in bin etc include lib libexec share var; do
++			if [[ -d "$TERMUX_PREFIX_OVERRIDE_REAL/$d" ]]; then
++				mkdir -p "$TERMUX_PREFIX_OVERRIDE/$d"
++				cp -as "$TERMUX_PREFIX_OVERRIDE_REAL/$d/." "$TERMUX_PREFIX_OVERRIDE/$d/" 2>/dev/null || true
++			fi
++		done
++	fi
++fi
++
++# Legacy compatibility: subversioned builds allow TERMUX_PREFIX_OVERRIDE
++# termux_step_massage rewrites every shebang to '$TERMUX_PREFIX' (the versioned
++# prefix). On device the interpreters (sh, bash, env, python, ...) live in the
++# real prefix (/data/data/com.termux/files/usr), so shebangs and proot maps of
++# the form '<versioned>/bin/<interpreter>' are mapped back to the real prefix.
++# Exception: if the package installs its OWN interpreter under the versioned
++# prefix (e.g. a subversioned python/node), that interpreter must NOT be
++# remapped - it stays inside the self-contained install.
++termux_step_fix_versioned_shebangs() {
++	if [[ -z "${TERMUX_PREFIX_OVERRIDE:-}" ]]; then
++		return
++	fi
++	local versioned_prefix="$TERMUX_PREFIX_OVERRIDE"
++	local real_prefix="${TERMUX_PREFIX_OVERRIDE_REAL:-/data/data/com.termux/files/usr}"
++	local massaged_prefix="$TERMUX_PKG_MASSAGEDIR/$versioned_prefix"
++	local versioned_escaped real_escaped interp interp_path file
++
++	[[ "$versioned_prefix" == "$real_prefix" ]] && return
++	[[ -d "$massaged_prefix" ]] || return
++
++	# Escape the prefixes for the 's@@@' delimiter (keep '/' unescaped).
++	# GNU sed 4.9 fails with "unterminated s command" on the compact class
++	# '[][.\\$(){}?+*^|]', so escape each group of metacharacters with its
++	# own -e expression (backslash first, then [ and ], then the rest).
++	versioned_escaped="$(printf '%s' "$versioned_prefix" | sed -e 's/\\/\\\\/g' -e 's/\[/\\[/g' -e 's/\]/\\]/g' -e 's/[.$(){}+*?^|$]/\\&/g')"
++	real_escaped="$(printf '%s' "$real_prefix" | sed -E 's/[&\\]/\\&/g')"
++
++	# Interpreters that live in the real prefix on device. Each one is skipped
++	# when the package ships its own copy under the versioned prefix.
++	for interp in sh bash env dash zsh ksh fish python perl ruby node nodejs php lua luajit awk gawk sed make; do
++		# Package-owned interpreter (exact binary, or version-suffixed python
++		# like python3.12 / lua5.4): keep the versioned prefix, do not remap.
++		# ${TERMUX_PREFIX_CLASSICAL#/} strips the leading slash so the path
++		# never contains a double slash (compgen -G cannot match those).
++		interp_path="$TERMUX_PKG_MASSAGEDIR/${TERMUX_PREFIX_CLASSICAL#/}/bin/$interp"
++		if [[ -e "$interp_path" ]]; then
++			continue
++		fi
++		case "$interp" in
++			python|lua)
++				# Precise glob: versioned interpreters are python3.12 / lua5.4,
++				# never python-config / luajit, so match only [0-9.] suffixes.
++				if compgen -G "${interp_path}[0-9.]*" >/dev/null 2>&1; then
++					continue
++				fi
++				;;
++		esac
++		while IFS= read -r -d '' file; do
++			if LC_ALL=C grep -Iq "$versioned_prefix" "$file" 2>/dev/null; then
++				# Word boundary ([^a-zA-Z0-9_]|$) so '/bin/sed' does not match
++				# '/bin/sed-helper' and '/bin/python' does not match
++				# '/bin/python-config'. The boundary char is kept via \1.
++				sed -i -E "s@${versioned_escaped}/bin/${interp}([^a-zA-Z0-9_]|$)@${real_escaped}/bin/${interp}\1@g" "$file"
++			fi
++		done < <(find "$massaged_prefix" -type f -print0 2>/dev/null || true)
++	done
++}
+ 
+ # Check if the package is in the compiled list
+ termux_check_package_in_built_packages_list() {
+@@ -792,6 +890,7 @@
+ 		termux_step_massage
+ 		cd "$TERMUX_PKG_MASSAGEDIR/$TERMUX_PREFIX_CLASSICAL"
+ 		termux_step_post_massage
++		termux_step_fix_versioned_shebangs
+ 		# At the final stage (when the package is archiving) it is better to use commands from the system
+ 		if [[ "$TERMUX_ON_DEVICE_BUILD" == "false" ]]; then
+ 			export PATH="/usr/bin:$PATH"

@@ -104,6 +104,10 @@ Install them with:
 # Extrae un .pkg.tar.xz a ~/.local/opt/<pkg>-<version>/ con symlinks para cada
 # binario en ~/.local/bin/<bin>-<version>.
 #
+# Detecta automáticamente el layout del tar (vía tar -tf + grep):
+#   subversioned →  data/data/com.termux/files/home/.local/opt/<pkg>-<ver>/...
+#   standard     →  data/data/com.termux/files/usr/...
+#
 extract_artifact() {
     local artifact="$1"
     local pkg="$2"
@@ -123,18 +127,51 @@ extract_artifact() {
         return 0
     fi
 
-    info "Extracting '${pkg_versioned}' to ${target}..."
+    # ── Detección de layout ───────────────────────────────────────────────────
+    # Primer path que delate el prefijo:
+    #   home/.local/opt/       → release subversioned (prefix ~/.local/opt)
+    #   com.termux/files/usr/  → release estándar (layout actual)
+    local layout="standard"
+    local first_match
+    first_match="$(tar -tf "$artifact" 2>/dev/null | grep -m1 -E 'home/.local/opt/|com.termux/files/usr/' || true)"
+    if [[ "$first_match" == *"home/.local/opt/"* ]]; then
+        layout="subversioned"
+    fi
+
+    info "Extracting '${pkg_versioned}' to ${target}... (layout: ${layout})"
     mkdir -p "$target"
 
-    # Intentar extraer con --strip-components para quitar prefijo Termux
-    if tar -xf "$artifact" --strip-components=5 -C "$target" 2>/dev/null; then
-        :  # OK
-    elif tar -xf "$artifact" --strip-components=4 -C "$target" 2>/dev/null; then
-        :  # OK
+    if [[ "$layout" == "subversioned" ]]; then
+        # ── Layout versionado: extraer a $HOME ────────────────────────────────
+        # Ruta interna del tar:
+        #   data/data/com.termux/files/home/.local/opt/<pkg>-<ver>/...
+        # Componentes del prefijo a eliminar:
+        #   data(1) data(2) com.termux(3) files(4) home(5)
+        # → --strip-components=5 deja .local/opt/<pkg>-<ver>/... relativo a $HOME
+        # → $HOME/.local/opt/<pkg>-<ver>/... = target ✓
+        # NOTA (aritmética verificada): el diseño original proponía strip 6,
+        # pero 6 eliminaría también .local y dejaría opt/<pkg>-<ver>/ suelto
+        # en $HOME (destino incorrecto). El strip correcto es 5.
+        if ! tar -xf "$artifact" --strip-components=5 -C "$HOME" 2>/dev/null; then
+            die "Failed to extract ${artifact} (subversioned layout)"
+        fi
+        # Defensa: confirmar que la extracción cayó en el destino esperado
+        if [[ ! -d "$target" ]]; then
+            die "Extraction did not produce expected directory: ${target}. Unexpected tar layout in ${artifact}"
+        fi
     else
-        tar -xf "$artifact" -C "$target" 2>/dev/null || {
-            die "Failed to extract ${artifact}"
-        }
+        # ── Layout estándar: comportamiento actual ────────────────────────────
+        # Ruta interna: data/data/com.termux/files/usr/...
+        # strip 5 → bin/... relativo a $target
+        if tar -xf "$artifact" --strip-components=5 -C "$target" 2>/dev/null; then
+            :  # OK
+        elif tar -xf "$artifact" --strip-components=4 -C "$target" 2>/dev/null; then
+            :  # OK
+        else
+            tar -xf "$artifact" -C "$target" 2>/dev/null || {
+                die "Failed to extract ${artifact}"
+            }
+        fi
     fi
 
     # Mostrar contenido de bin/
@@ -173,6 +210,7 @@ cmd_list() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --refresh) refresh=1; shift ;;
+            --subversioned) shift ;;  # aceptado sin efecto (compatibilidad)
             -*)
                 die "Unknown argument: $1"
                 ;;
@@ -208,17 +246,20 @@ cmd_list() {
 }
 
 # ─── Command: build ──────────────────────────────────────────────────────────────
-# Usage: prev-termux build <package> [--commit <sha>]
+# Usage: prev-termux build <package> [--commit <sha>] [--subversioned]
 #
 # Interactive mode (default): uses fzf to pick a version, then either downloads
 #   the existing release or triggers a GHA workflow to build it.
 # Direct mode (--commit): skips fzf, uses the provided commit SHA directly.
+# --subversioned: targets the versioned release tag {pkg}-{ver}-{sha}-subversioned
+#   (releases built with prefix ~/.local/opt/<pkg>-<ver>/).
 #
 cmd_build() {
     local package=""
     local commit_sha=""
     local refresh=0
     local zram=false
+    local subversioned=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -233,6 +274,7 @@ cmd_build() {
                 ;;
             --refresh) refresh=1; shift ;;
             --heavy) zram=true; shift ;;
+            --subversioned) subversioned=true; shift ;;
             -*)
                 die "Unknown argument: $1"
                 ;;
@@ -247,7 +289,7 @@ cmd_build() {
         esac
     done
 
-    [[ -z "$package" ]] && die "Usage: prev-termux build <package> [--commit <sha>] [--refresh] [--heavy]"
+    [[ -z "$package" ]] && die "Usage: prev-termux build <package> [--commit <sha>] [--refresh] [--heavy] [--subversioned]"
 
     local version="" sha="" date="" short_sha=""
 
@@ -278,8 +320,14 @@ cmd_build() {
     fi
 
     # ── Build tag ─────────────────────────────────────────────────────────────
+    # Tag normal:     {package}-{version}-{short_sha}
+    # Tag versionado: {package}-{version}-{short_sha}-subversioned
     # Sanitize: remove spaces, replace non-alphanumeric characters (except ._-)
-    local tag_raw="${package}-${version}-${short_sha}"
+    local tag_suffix=""
+    if [[ "$subversioned" == "true" ]]; then
+        tag_suffix="-subversioned"
+    fi
+    local tag_raw="${package}-${version}-${short_sha}${tag_suffix}"
     local tag
     tag="$(echo "$tag_raw" | tr -d ' ' | sed 's/[^a-zA-Z0-9._-]/-/g')"
 
@@ -289,6 +337,11 @@ cmd_build() {
     echo -e "  ${BOLD}Version${NC}   ${version}"
     echo -e "  ${BOLD}Commit${NC}    ${sha}"
     echo -e "  ${BOLD}Date${NC}      ${date}"
+    if [[ "$subversioned" == "true" ]]; then
+        echo -e "  ${BOLD}Mode${NC}      subversioned (prefix ~/.local/opt/${package}-${version}/)"
+    else
+        echo -e "  ${BOLD}Mode${NC}      standard"
+    fi
     echo -e "  ${BOLD}Tag${NC}       ${tag}"
     echo ""
 
@@ -304,14 +357,24 @@ cmd_build() {
         # Buscar releases que coincidan por paquete y versión
         info "Tag exacto '${tag}' no encontrado. Buscando releases por versión..."
         local matching_tag
-        matching_tag="$(gh release list -R "$RELEASE_REPO" --limit 50 --json tagName --jq '.[].tagName' 2>/dev/null | grep "^${package}-${version}-" | head -1 || true)"
+        if [[ "$subversioned" == "true" ]]; then
+            # Solo tags versionados ({pkg}-{ver}-{sha}-subversioned)
+            matching_tag="$(gh release list -R "$RELEASE_REPO" --limit 50 --json tagName --jq '.[].tagName' 2>/dev/null | grep -F "${package}-${version}-" | grep -- "-subversioned$" | head -1 || true)"
+        else
+            # Tags normales ({pkg}-{ver}-{sha}), excluyendo los subversioned
+            matching_tag="$(gh release list -R "$RELEASE_REPO" --limit 50 --json tagName --jq '.[].tagName' 2>/dev/null | grep -F "${package}-${version}-" | grep -v -- "-subversioned$" | head -1 || true)"
+        fi
 
         if [[ -n "$matching_tag" ]]; then
             ok "Found existing release: ${matching_tag}"
             tag="$matching_tag"
             do_download=true
         else
-            info "No existing release found. Triggering build workflow..."
+            if [[ "$subversioned" == "true" ]]; then
+                info "No subversioned release found. Triggering build workflow (builds normal + subversioned)..."
+            else
+                info "No existing release found. Triggering build workflow..."
+            fi
             echo ""
 
             # Intentar habilitar el workflow por si está inactivo
@@ -489,19 +552,32 @@ cmd_subinstall() {
         rm -rf "$preview_dir"
     fi
 
-    # Extraer nombre del paquete y versión del nombre del archivo
-    local filename
-    filename=$(basename "$target_file")
+    # Extraer nombre del paquete y versión del nombre del archivo.
     # Formato esperado: <pkg>-<version>-<revision>-<arch>.pkg.tar.xz
     # Ej: bat-0.24.0-0-aarch64.pkg.tar.xz
-    local pkg version
+    # Parseo desde el FINAL (robusto frente a dígitos en el nombre del paquete):
+    #   libpng16-1.6.43-0-aarch64 → libpng16 / 1.6.43
+    #   zig-0.15.2-0-aarch64      → zig / 0.15.2
+    local pkg version base filename
+    filename="$(basename "$target_file")"
+    base="${filename%.pkg.tar.*}"                          # {pkg}-{ver}-{rev}-{arch}
+    # 1. Quitar la arquitectura final
+    case "$base" in
+        *-aarch64) base="${base%-aarch64}" ;;
+        *-arm)     base="${base%-arm}" ;;
+        *-i686)    base="${base%-i686}" ;;
+        *-x86_64)  base="${base%-x86_64}" ;;
+        *-all)     base="${base%-all}" ;;
+    esac
+    # 2. Quitar la revisión final (dígitos): {pkg}-{ver}-{rev} → {pkg}-{ver}
+    if [[ "$base" =~ -[0-9]+$ ]]; then
+        base="${base%-[0-9]*}"
+    fi
+    # 3. Ahora base = {pkg}-{ver}
+    pkg="$(echo "$base" | sed -E 's/-[0-9][^-]*$//')"
+    version="$(echo "$base" | sed -E 's/^.*-([0-9][^-]*)$/\1/')"
 
-    # Extraer nombre (todo antes del primer dígito después del primer guión)
-    pkg=$(echo "$filename" | sed -E 's/^([a-zA-Z_-][a-zA-Z_-]*)-[0-9].*/\1/')
-    # Extraer versión (primer grupo número.número... después del nombre)
-    version=$(echo "$filename" | sed -E 's/^[a-zA-Z_-]+-([0-9]+(\.[0-9]+)*).*/\1/')
-
-    if [[ -z "$pkg" || -z "$version" ]]; then
+    if [[ -z "$pkg" || -z "$version" || "$version" == "$base" ]]; then
         warn "Could not parse package name/version from filename: ${filename}"
         pkg="${filename%.pkg.tar.*}"
         version="unknown"
@@ -638,15 +714,21 @@ ${BOLD}Commands:${NC}
       package. Displays version, commit SHA, and date.
       --refresh   Force re-discovery, ignoring cache
 
-  build <package> [--commit <sha>] [--refresh] [--heavy]
+  build <package> [--commit <sha>] [--refresh] [--heavy] [--subversioned]
       Interactive mode: pick a version via fzf, then either download an
       existing release or trigger the GHA build workflow.
       --commit <sha>  Direct mode: skip fzf, build the exact commit SHA.
       --refresh       Force re-discovery, ignoring cache
       --heavy         Optimize for heavy builds: ZRAM 16GB + free disk space
+      --subversioned  Target the versioned release: tag {pkg}-{ver}-{sha7}-subversioned,
+                      built with prefix ~/.local/opt/<pkg>-<ver>/.
+                      Also accepted (no effect) by 'list'.
 
   subinstall [<package>|<file.pkg.tar.xz>]
       Extract a .pkg.tar.xz to ~/.local/opt/<pkg>-<version>/
+      Auto-detects the tar layout: subversioned
+      (data/data/com.termux/files/home/.local/opt/...) vs standard
+      (data/data/com.termux/files/usr/...).
       Creates versioned symlinks in ~/.local/bin/<bin>-<version>
       If no argument is given, shows all artifacts in output/ via fzf.
       If a package name is given, filters artifacts by that package.
@@ -674,6 +756,7 @@ ${BOLD}Examples:${NC}
   prev-termux build libfoo --commit a1b2c3d
   prev-termux build nodejs --refresh
   prev-termux build zig --commit a1b2c3d --heavy
+  prev-termux build libfoo --commit a1b2c3d --subversioned
   prev-termux subinstall
   prev-termux subinstall ./output/bat-0.24.0-0-aarch64.pkg.tar.xz
   prev-termux cache info
@@ -739,7 +822,7 @@ main() {
             cmd_list "$@"
             ;;
         build)
-            [[ $# -lt 1 ]] && die "Usage: prev-termux build <package> [--commit <sha>] [--refresh] [--heavy]"
+            [[ $# -lt 1 ]] && die "Usage: prev-termux build <package> [--commit <sha>] [--refresh] [--heavy] [--subversioned]"
             cmd_build "$@"
             ;;
         subinstall)
