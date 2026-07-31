@@ -1,0 +1,13 @@
+--- a/scripts/build/termux_step_make_install.sh
++++ b/scripts/build/termux_step_make_install.sh
+@@ -23,7 +23,9 @@
+ 		fi
+ 	elif test -f Cargo.toml; then
+ 		if [[ -z "$(command -v cargo)" ]]; then
+-			termux_error_exit "cargo command is not found! Please add termux_setup_rust in package's build.sh!"
++			# Legacy compatibility: old build.sh files don't call termux_setup_rust
++			# (it was automatic until commit 030d411c9b, Oct 2025)
++			termux_setup_rust
+ 		fi
+ 		local CARGO_DEBUG_FLAG=''
+ 		if [[ "$TERMUX_DEBUG_BUILD" == "true" ]]; then
