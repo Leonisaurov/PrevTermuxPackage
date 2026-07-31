@@ -54,6 +54,26 @@ Claves GPG de los firmantes del repositorio (9 claves en master):
 
 - `build.sh` — script del paquete termux-keyring.
 
+### `packages/termux-elf-cleaner/` (dependencia de descarga externa)
+
+El `scripts/build/termux_step_start_build.sh` moderno lee `packages/termux-elf-cleaner/build.sh` para obtener `TERMUX_PKG_VERSION` y descargar el binario desde GitHub Releases:
+
+```
+https://github.com/termux/termux-elf-cleaner/releases/download/v${VERSION}/termux-elf-cleaner
+```
+
+**Problema con commits antiguos**: el `build.sh` del commit antiguo tiene `TERMUX_PKG_VERSION=1.2`, pero los assets de los releases SOLO existen desde **v2.2.0** (dic 2023). El release v1.2 existe pero sin assets adjuntos → 404.
+
+**Releases con assets**: v3.0.1 (actual), v3.0.0, v2.2.1, v2.2.0. Los v1.x–v2.1.x se distribuían compilando desde el tarball del tag, no con binarios adjuntos.
+
+**Solución**: el sparse checkout incluye `packages/termux-elf-cleaner` para copiar el `build.sh` moderno (v3.0.1).
+
+**Checksum sha256** (hardcodeado en `termux_step_start_build.sh`):
+
+```
+59645fb25b84d11f108436e83d9df5e874ba4eb76ab62948869a23a3ee692fa7
+```
+
 ## Problema con Commits Antiguos
 
 Cada commit de `termux-packages` tiene SU PROPIA versión de estos archivos:

@@ -189,7 +189,7 @@ jobs:
           git clone --depth=1 --filter=blob:none --sparse \
             https://github.com/termux/termux-packages.git /tmp/termux-master
           cd /tmp/termux-master
-          git sparse-checkout set scripts packages/termux-keyring
+          git sparse-checkout set scripts packages/termux-keyring packages/termux-elf-cleaner
           
           echo "Downloading build-package.sh..."
           curl -sL -o build-package.sh \
@@ -209,6 +209,11 @@ jobs:
           rm -rf "${GITHUB_WORKSPACE}/termux-packages/packages/termux-keyring"
           cp -r packages/termux-keyring \
             "${GITHUB_WORKSPACE}/termux-packages/packages/termux-keyring"
+
+          # Copiar build.sh moderno de termux-elf-cleaner
+          rm -rf "${GITHUB_WORKSPACE}/termux-packages/packages/termux-elf-cleaner"
+          cp -r packages/termux-elf-cleaner \
+            "${GITHUB_WORKSPACE}/termux-packages/packages/termux-elf-cleaner"
 
           rm -rf /tmp/termux-master
           echo "Done. Build system updated from master."
