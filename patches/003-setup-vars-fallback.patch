@@ -1,0 +1,45 @@
+--- a/scripts/build/termux_step_setup_variables.sh
++++ b/scripts/build/termux_step_setup_variables.sh
+@@ -169,13 +169,16 @@
+ 	TERMUX_PKG_GROUPS="" # https://wiki.archlinux.org/title/Pacman#Installing_package_groups
+ 	TERMUX_PKG_ON_DEVICE_BUILD_NOT_SUPPORTED=false # if the package does not support compilation on a device, then this package should not be compiled on devices
+ 	TERMUX_PKG_SETUP_PYTHON=false # setting python to compile a package
+-	TERMUX_PYTHON_VERSION="$( # get the latest version of python
+-		if [[ "${TERMUX_PACKAGE_LIBRARY}" == "bionic" ]]; then
+-			. "$TERMUX_SCRIPTDIR/packages/python/build.sh"
+-		else # glibc
+-			. "$TERMUX_SCRIPTDIR/gpkg/python/build.sh"
++	TERMUX_PYTHON_VERSION="$(
++		# Extract _MAJOR_VERSION without sourcing the full build.sh
++		# (old build.sh files have executable code that fails when sourced)
++		_PY_BUILD="$TERMUX_SCRIPTDIR/packages/python/build.sh"
++		_MAJOR_VERSION="$(grep -oP '^_MAJOR_VERSION=\K.+' "$_PY_BUILD" 2>/dev/null | head -1 | tr -d '"' | tr -d "'" | tr -d ' ')"
++		if [[ -z "$_MAJOR_VERSION" ]]; then
++			# Fallback: derive from TERMUX_PKG_VERSION
++			_MAJOR_VERSION="$(grep -oP '^TERMUX_PKG_VERSION=\K.+' "$_PY_BUILD" 2>/dev/null | head -1 | tr -d '"' | tr -d "'" | cut -d. -f1-2)"
+ 		fi
+-		echo "$_MAJOR_VERSION"
++		echo "${_MAJOR_VERSION:-3.12}"
+ 	)"
+ 	TERMUX_PKG_PYTHON_TARGET_DEPS="" # python modules to be installed via pip3
+ 	TERMUX_PKG_PYTHON_CROSS_BUILD_DEPS="" # python modules to be installed via build-pip
+@@ -185,13 +188,14 @@
+ 	TERMUX_PYTHON_CROSSENV_BUILDHOME="$TERMUX_PYTHON_CROSSENV_PREFIX/build/lib/python${TERMUX_PYTHON_VERSION}"
+ 	TERMUX_PYTHON_HOME=$TERMUX__PREFIX__LIB_DIR/python${TERMUX_PYTHON_VERSION} # location of python libraries
+ 	TERMUX_LLVM_VERSION="$( # get the latest version of LLVM
+-		if [[ "${TERMUX_PACKAGE_LIBRARY}" == "bionic" ]]; then
+-			. "$TERMUX_SCRIPTDIR/packages/libllvm/build.sh"
+-		else # glibc
+-			. "$TERMUX_SCRIPTDIR/gpkg/llvm/build.sh"
++		_LLVM_BUILD="$TERMUX_SCRIPTDIR/packages/libllvm/build.sh"
++		if [[ ! -f "$_LLVM_BUILD" ]]; then
++			# Old commits may not have libllvm/build.sh (split happened 2017-02)
++			_LLVM_BUILD="$TERMUX_SCRIPTDIR/packages/clang/build.sh"
+ 		fi
+-		echo "$TERMUX_PKG_VERSION"
++		grep -oP '^TERMUX_PKG_VERSION=\K.+' "$_LLVM_BUILD" 2>/dev/null | head -1 | tr -d '"' | tr -d "'" | tr -d ' '
+ 	)"
++	TERMUX_LLVM_VERSION="${TERMUX_LLVM_VERSION:-7.0.0}"
+ 	TERMUX_LLVM_MAJOR_VERSION="${TERMUX_LLVM_VERSION%%.*}"
+ 	TERMUX_LLVM_NEXT_MAJOR_VERSION="$((TERMUX_LLVM_MAJOR_VERSION + 1))"
+ 	TERMUX_PKG_MESON_NATIVE=false
