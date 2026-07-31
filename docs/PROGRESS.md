@@ -8,7 +8,7 @@
 
 - **Estado**: En desarrollo activo
 - **Objetivo**: compilar commits antiguos de `termux-packages` con el build system moderno
-- **Bloqueo actual**: exit 2 al aplicar `Cargo.toml.patch` de `bat` (commit 2018)
+- **Bloqueo actual**: exit 2 en `termux_step_make_install` al compilar `bat` (commit 2018)
 
 ## Arquitectura del sistema
 
@@ -35,7 +35,7 @@
 | 11 | `cargo not found` | `make_install` ya no llama `termux_setup_rust` (desde oct-2025) | Patch 004 |
 | 12 | rust 0.7.1 (versión de bat) | `termux_setup_rust` sourcea `packages/rust` que no existe en 2018, captura `TERMUX_PKG_VERSION` del entorno | Patch 005 (grep+fallback) |
 | 13 | `BUILD_IN_SRC=yes` no interpretado | `start_build` compara con `"true"` estricto | Patch 006 (yes OR true) |
-| 14 | `Cargo.toml.patch` exit 2 | EN INVESTIGACIÓN (ver abajo) | Patch 007 (parcial) |
+| 14 | exit 2 en `termux_step_make_install` | EN INVESTIGACIÓN (ver abajo) | Patch 007 (parcial) |
 
 ### Parches creados (`patches/`)
 
@@ -52,26 +52,28 @@
 - `scripts/patch-build-system.sh`: idempotente, 7 parches + normalización legacy
 - Aplica parches con `patch -p1`, verifica con grep, salta si ya aplicado
 
-## Problema actual: exit 2 en `Cargo.toml.patch` (EN INVESTIGACIÓN)
+## Problema actual: exit 2 en `termux_step_make_install` (EN INVESTIGACIÓN)
 
 ### Síntoma
 
 ```
-Applying patch: Cargo.toml.patch
-patching file Cargo.toml
+>>> make_install
 ##[error]Process completed with exit code 2.
 ```
 
-(exit 2 de GNU patch = fatal, sin mensaje visible pese a quitar `--silent`)
+(El exit 2 ocurre en `termux_step_make_install`, ~58ms tras el marcador `>>> make_install`, sin output: fallo silencioso)
 
 ### Hechos confirmados
 
-1. `Cargo.toml` está PLANO en `/home/builder/.termux-build/bat/src` (`strip-components=1`)
-2. Patch normalizado correcto: `--- ./Cargo.toml`
-3. GNU patch 2.8 en `/usr/bin/patch` (Ubuntu, NO BusyBox)
-4. `--batch` no resuelve
-5. Localmente con sed simplificado (4 reglas) da exit 0
-6. CI usa sed completo: 11 reglas `@TERMUX_*@` + 2 normalización
+1. El parche `Cargo.toml.patch` aplica correctamente (PATCH EXIT 0, verificado)
+2. El exit 2 ocurre en `termux_step_make_install` (run 30615771833, marcadores del patch 008)
+3. Todos los pasos previos OK: `setup_toolchain`, `patch_package`, `configure`, `make`
+4. El fallo es silencioso: ~58ms sin output tras el marcador `>>> make_install`
+5. `Cargo.toml` está PLANO en `/home/builder/.termux-build/bat/src` (`strip-components=1`)
+6. Patch normalizado correcto: `--- ./Cargo.toml`
+7. GNU patch 2.8 en `/usr/bin/patch` (Ubuntu, NO BusyBox)
+8. Localmente con sed simplificado (4 reglas) da exit 0
+9. CI usa sed completo: 11 reglas `@TERMUX_*@` + 2 normalización
 
 ### Hipótesis principal (REFUTADA por run 30614617305)
 
@@ -84,18 +86,25 @@ patching file Cargo.toml
 - El exit 2 ocurre ~63ms DESPUÉS del último debug (post-patch)
 - Conclusión: el parche 007 FUNCIONA; el fallo está en un paso posterior
 
+### Hipótesis principal (ACTUAL)
+
+- ~~UNSET/garbage~~ refutada (ver arriba, run 30614617305)
+- **Nueva**: el parche 004 (`termux_setup_rust` automático) o `cargo install` falla en `make_install`
+  (rama Rust de `bat`; fallo silencioso, el runner probablemente no expone el stderr)
+
 ### Estado
 
-- Run 30614617305 completado: hipótesis UNSET refutada
-- Parche 007 confirmado funcional (PATCH EXIT 0)
-- Nuevo foco: el exit 2 ocurre DESPUÉS de termux_step_patch_package (paso posterior no identificado)
-- Patch 008 (debug post-patch con marcadores) creado, pendiente de probar en CI
+- Run 30614617305: hipótesis UNSET refutada, parche 007 confirmado funcional (PATCH EXIT 0)
+- **Run 30615771833 (patch 008): paso culpable identificado → `termux_step_make_install`**
+- Todos los pasos previos OK: `setup_toolchain`, `patch_package`, `configure`, `make`
+- Pendiente: capturar stderr de `make_install` (el runner no lo expone)
 
 ## Pendientes
 
 ### Inmediatos
 
-- [ ] Probar el patch 008 (marcadores post-patch) en CI para identificar el paso que falla con exit 2
+- [ ] Capturar stderr de `make_install` (`2>&1 | tee` en el patch 008, o revisar artefactos)
+- [ ] Verificar si `termux_setup_rust` o `cargo install` falla
 - [ ] Aplicar fix definitivo del exit 2 real
 - [ ] Limpiar debug de patches 007 y 008 (dejar solo lo necesario)
 
@@ -119,4 +128,4 @@ patching file Cargo.toml
 
 ## Conclusión
 
-El whack-a-mole reveló que el build system moderno y los commits 2018 son **MUY diferentes**. Los parches 001–007 cubren las incompatibilidades conocidas. Falta resolver el exit 2 del patch de paquetes y validar con regresiones.
+El whack-a-mole reveló que el build system moderno y los commits 2018 son **MUY diferentes**. Los parches 001–007 cubren las incompatibilidades conocidas. Falta resolver el exit 2 de `termux_step_make_install` y validar con regresiones.
