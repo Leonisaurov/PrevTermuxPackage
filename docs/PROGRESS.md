@@ -129,3 +129,47 @@
 ## Conclusión
 
 El whack-a-mole reveló que el build system moderno y los commits 2018 son **MUY diferentes**. Los parches 001–007 cubren las incompatibilidades conocidas. Falta resolver el exit 2 de `termux_step_make_install` y validar con regresiones.
+
+---
+
+## 📌 Checkpoint (2026-07-31) — Trabajo movido a branch
+
+Todo el trabajo del whack-a-mole quedó capturado en la branch:
+**`experiment/whack-a-mole-build-system`** (66 commits, incluye parches 001-009, docs y workflow).
+
+### Estado de la documentación
+
+| Archivo | Qué cubre |
+|---------|-----------|
+| `docs/PROGRESS.md` (este) | Progreso completo: problemas resueltos, parches, problema actual, pendientes |
+| `docs/build-system-internals.md` | Arquitectura interna del build system: variables legacy, termux_setup_rust, extracción, patches |
+| `patches/*.patch` | Los 9 parches de compatibilidad (001-009) |
+| `scripts/patch-build-system.sh` | Script idempotente que aplica los parches |
+
+### Punto exacto donde quedó la investigación
+
+- **Último run analizado**: 30615771833 — exit 2 identificado en `termux_step_make_install`
+- **Parche 009 creado** (sin probar en CI): instrumenta make_install con `DEBUG-MI` + captura stderr del cargo install
+- **Siguiente paso pendiente**: disparar build de bat con el patch 009 activo para capturar el stderr real de make_install
+
+### Para retomar
+
+```bash
+# 1. Cambiar a la branch del experimento
+git checkout experiment/whack-a-mole-build-system
+
+# 2. Disparar build de bat con debug (patch 009 incluido)
+gh workflow run build-old-package.yml -R Leonisaurov/PrevTermuxPackage \
+  -f package_name=bat \
+  -f git_ref=e4f2135503542a2924691975bcdcef85768139c0
+
+# 3. Ver marcadores DEBUG-MI en el log
+gh run view <RUN_ID> -R Leonisaurov/PrevTermuxPackage --log | grep "DEBUG-MI"
+
+# 4. Aplicar fix definitivo + regresiones (which, zig) + limpiar debug
+```
+
+### Nota importante
+- Los commits de este experimento están en la branch `experiment/whack-a-mole-build-system`
+- `main` local tiene los commits pero `origin/main` NO fue pusheado con el último commit (0af5c81, patch 009)
+- Si se quiere, se puede hacer PR de la branch a main, o mantenerla como referencia
