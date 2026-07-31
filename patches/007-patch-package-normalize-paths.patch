@@ -1,15 +1,29 @@
 --- a/scripts/build/termux_step_patch_package.sh
 +++ b/scripts/build/termux_step_patch_package.sh
-@@ -19,6 +19,8 @@
+@@ -2,6 +2,9 @@
+ 	[ "$TERMUX_PKG_METAPACKAGE" = "true" ] && return
+ 
+ 	cd "$TERMUX_PKG_SRCDIR"
++	echo "DEBUG: SRCDIR=$TERMUX_PKG_SRCDIR"
++	echo "DEBUG: CONTENIDO SRCDIR:"
++	ls -la "$TERMUX_PKG_SRCDIR" 2>&1 || true
+ 	# Suffix patch with ".patch32" or ".patch64" to only apply for
+ 	# these bitnesses
+ 	local PATCHES=$(find $TERMUX_PKG_BUILDER_DIR -mindepth 1 -maxdepth 1 \
+@@ -19,6 +22,12 @@
  	shopt -s nullglob
  	for patch in $PATCHES $DEBUG_PATCHES $ON_DEVICE_PATCHES; do
  		echo "Applying patch: $(basename $patch)"
-+		# Legacy compatibility: normalize "--- ../pkg-version/..." headers in
-+		# 2018-era patches (BusyBox patch can't find the file, unlike GNU patch)
++		echo "DEBUG: PATCH NORMALIZADO PARA $(basename $patch):"
++		sed -e "s%@TERMUX_PREFIX@%${TERMUX_PREFIX}%g" \
++		    -e "s%@TERMUX_HOME@%${TERMUX_ANDROID_HOME}%g" \
++		    -e "s%^--- \.\./[^/]*/%--- ./%g" \
++		    -e "s%^+++ \.\./[^/]*/%+++ ./%g" \
++		    "$patch" | head -20
  		test -f "$patch" && sed \
  			-e "s%\@TERMUX_APP_PACKAGE\@%${TERMUX_APP_PACKAGE}%g" \
  			-e "s%\@TERMUX_BASE_DIR\@%${TERMUX_BASE_DIR}%g" \
-@@ -31,7 +33,9 @@
+@@ -31,7 +40,9 @@
  			-e "s%\@TERMUX_ENV__S_TERMUX_API_APP\@%${TERMUX_ENV__S_TERMUX_API_APP}%g" \
  			-e "s%\@TERMUX_ENV__S_TERMUX_ROOTFS\@%${TERMUX_ENV__S_TERMUX_ROOTFS}%g" \
  			-e "s%\@TERMUX_ENV__S_TERMUX_EXEC\@%${TERMUX_ENV__S_TERMUX_EXEC}%g" \
