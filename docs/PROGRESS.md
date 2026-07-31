@@ -14,11 +14,12 @@
 
 - **CLI local**: `scripts/prev-termux` (fzf, gh, git) + `scripts/lib/discover.sh`
 - **GHA workflow**: `.github/workflows/build-old-package.yml` (`workflow_dispatch`)
-- **Resultado**: `.pkg.tar.xz` vía releases de GitHub
+- **Pipeline de build**: compila SIEMPRE `.deb` (`--format debian`, formato universal) y `scripts/deb2pkg.sh` lo convierte a `.pkg.tar.xz` (pacman)
+- **Resultado**: `.deb` + `.pkg.tar.xz` vía releases de GitHub
 
 ## Descubrimientos (whack-a-mole del build system)
 
-### Problemas resueltos (7 parches + fixes de workflow)
+### Problemas resueltos (10 parches + fixes de workflow)
 
 | # | Problema | Causa raíz | Fix |
 |---|----------|-----------|-----|
@@ -46,10 +47,13 @@
 - `005-termux-setup-rust.patch`: grep+fallback 1.75.0
 - `006-start-build-build-in-src.patch`: `BUILD_IN_SRC` acepta `yes`/`true`
 - `007-patch-package-normalize-paths.patch`: normaliza `../pkg-ver/` → `./` + DEBUG
+- `008-post-patch-debug.patch`: marcadores DEBUG en build-package.sh (investigación exit 2)
+- `009-make-install-debug.patch`: envoltura `2>&1 | tee + PIPESTATUS` del cargo install (investigación exit 2)
+- `010-prefix-override.patch`: `TERMUX_PREFIX_OVERRIDE` (prefix versionado) + `termux_step_fix_versioned_shebangs` (shebangs/maps proot)
 
 ### Script de parches
 
-- `scripts/patch-build-system.sh`: idempotente, 7 parches + normalización legacy
+- `scripts/patch-build-system.sh`: idempotente, 10 parches (001–010) + normalización legacy
 - Aplica parches con `patch -p1`, verifica con grep, salta si ya aplicado
 
 ## Problema actual: exit 2 en `termux_step_make_install` (EN INVESTIGACIÓN)
@@ -99,6 +103,65 @@
 - Todos los pasos previos OK: `setup_toolchain`, `patch_package`, `configure`, `make`
 - Pendiente: capturar stderr de `make_install` (el runner no lo expone)
 
+## 2026-07-31 — Fase 2: builds subversioned (2 jobs GHA)
+
+### Qué se implementó
+
+- **Workflow con 2 jobs SIEMPRE activos** (`.github/workflows/build-old-package.yml`): `build-normal` (como antes) y `build-subversioned` (nuevo). Ambos se lanzan en CADA run (`workflow_dispatch`), independientes (sin `needs`), sin skips. Inputs sin cambios salvo `format` (default `debian` — ver sección de reestructuración).
+- **Patch 010** (`patches/010-prefix-override.patch`, paso 11 de `scripts/patch-build-system.sh`): soporta `TERMUX_PREFIX_OVERRIDE` en `build-package.sh` de master:
+  - Override post-validación (patrón glibc: `termux_build_props__set_termux_prefix_dir_and_sub_variables`).
+  - `TERMUX_PREFIX_CLASSICAL`/`TERMUX__PREFIX_CLASSICAL` alineados al prefix versionado (el tar trae el árbol versionado).
+  - Bootstrap del sistema base: `cp -as` de `bin etc include lib libexec share var` del prefix real bajo el versionado (deps de fast mode visibles al compilador).
+  - `termux_step_fix_versioned_shebangs` (post-massage): remapea shebangs y maps proot `<versioned>/bin/<interp>` → PREFIX real, con guard de intérpretes que el propio paquete instala.
+- **CLI**: `prev-termux build <pkg> --subversioned` busca/crea el tag `{pkg}-{ver}-{sha7}-subversioned`; `subinstall` detecta el layout del tar (`tar -tf`: `home/.local/opt/` → versionado → `--strip-components=5` a `$HOME`; `com.termux/files/usr/` → estándar → comportamiento actual).
+- **`scripts/lib/version-extract.sh`**: extracción canónica de versión (resuelve `${VAR}`, `${VAR%.*}`, etc.), reutilizada por `discover.sh` y `gha-build.sh`.
+- **Scripts GHA**: `scripts/gha-prepare.sh` (preparación del build system: sparse checkout master + parches 001–010) y `scripts/gha-build.sh` (build con `--subversioned`; guards de sanidad: patch 010 aplicado, formato/arquitectura válidos, path sin espacios/globs).
+
+### Flujo de code review
+
+- 2 CRITICAL + 6 MAJOR corregidos (revisión inicial).
+- 1 CRITICAL + 2 MAJOR finales corregidos (ronda final).
+- **Test funcional local PASA** (subinstall con layout versionado y estándar).
+
+### Pendientes (Fase 2)
+
+- [ ] Prueba real en GHA de un build subversioned: **ncurses** (con deps) y **bash** (intérprete del sistema).
+- [ ] Commit/push de la fase 2 (cuando el usuario lo pida).
+- [ ] Limpiar debug de parches 007–009.
+- [x] Documentar el flujo (README/esquema/PROGRESS — actualizadas).
+
+## 2026-07-31 — Reestructuración: pipeline .deb + conversión + deps versionadas
+
+### Qué se implementó
+
+- **`scripts/deb2pkg.sh` (NUEVO)**: convierte cada `.deb` → `.pkg.tar.xz` (pacman) replicando el template EXACTO de `termux_step_create_pacman_package.sh` de termux (master):
+  - `.PKGINFO` con las mismas transformaciones de deps (`Depends "pkg (>= ver)"` → `depend = pkg>=ver`), conffiles → `backup`, etc.
+  - `.MTREE` comprimido con gzip (comando exacto de termux) y `.BUILDINFO`.
+  - Re-empaquetado con `bsdtar --no-fflags` + `xz`.
+  - Nombre del artifact: `{pkg}-{ver}-{rev}-{arch}.pkg.tar.xz` (separadores `-`, no `_`), con la versión sanitizada con la regla del prefix (`tr -d '"' "'" ' '` + `sed 's/[^a-zA-Z0-9._-]/-/g'`) y sufijo `-0` si el `Version` no trae release (libalpm ≥ 16 lo rechaza sin release).
+  - Usa `${TMPDIR:-$HOME/tmp}` para trabajar (NUNCA `/tmp`, no escribible en Termux si `TMPDIR` no está definido).
+  - **Testeado con `pacman -Qip`**.
+- **`scripts/gha-build.sh` — pipeline .deb + conversión + deps versionadas**:
+  - `--format debian` **SIEMPRE** (el input `format` se acepta/valida `pacman|debian` por compatibilidad con el dispatch manual, pero el build ignora el flag: el `.deb` es el formato universal, compatible con commits pre-2021-09 que no soportan `--format pacman`).
+  - En modo subversioned fuerza `-F` (full mode) **SIEMPRE**, sin importar `--build-mode`: la recursión de `build-package.sh` hereda `TERMUX_PREFIX_OVERRIDE` → las **deps también quedan versionadas** en el prefix `~/.local/opt/<dep>-<ver>/`.
+  - Conversión post-build con `deb2pkg.sh`: busca los `.deb` en `output/` (master, `TERMUX_OUTPUT_DIR`) y `debs/` (commits pre-2021, `TERMUX_DEBDIR`).
+  - Guard: si no hay `.deb` tras el build → error explícito.
+- **Workflow `.github/workflows/build-old-package.yml`**:
+  - Input `format`: default `debian` (antes `pacman`), con descripción documentando que el build SIEMPRE compila `.deb` y `deb2pkg.sh` lo convierte a `.pkg.tar.xz`.
+  - Step **`Install conversion tools`** en AMBOS jobs: `apt install libarchive-tools binutils` (`bsdtar` + `ar`; `dpkg-deb`/`xz` ya vienen en ubuntu-latest).
+  - Upload y release adjuntan **AMBOS formatos**: `*.deb` original + `*.pkg.tar.xz` convertido (notas del release: `Artifacts: .deb + .pkg.tar.xz`).
+- **Fixes de bloqueantes con verificación**:
+  - Naming del artifact desde los **campos del control** del `.deb` (no del basename, que usa `_`), con la regla de sanitización del prefix para que coincida con el dir del árbol versionado de `subinstall`.
+  - Sufijo `-0` para pacman (libalpm rechaza `pkgver` sin release).
+  - Fallback `$TMPDIR` (nunca `/tmp`).
+  - Conversión validada con `pacman -Qip` (test local OK).
+
+### Pendientes (reestructuración)
+
+- [ ] Prueba real en GHA: **ncurses** (con deps) y **bash** (intérprete del sistema) — validar pipeline .deb → deb2pkg.sh → .pkg.tar.xz y deps versionadas en condiciones reales.
+- [ ] Commit/push (cuando el usuario lo pida).
+- [ ] Limpiar debug de parches 007–009.
+
 ## Pendientes
 
 ### Inmediatos
@@ -124,8 +187,7 @@
 
 - [ ] Caché de builds (toolchain, LLVM)
 - [ ] Manejar commits pre-2019 con más limitaciones (`develsplit` eliminado)
-- [ ] Convertir `.deb` → `.pkg.tar.xz` como fallback
 
 ## Conclusión
 
-El whack-a-mole reveló que el build system moderno y los commits 2018 son **MUY diferentes**. Los parches 001–007 cubren las incompatibilidades conocidas. Falta resolver el exit 2 de `termux_step_make_install` y validar con regresiones.
+El whack-a-mole reveló que el build system moderno y los commits 2018 son **MUY diferentes**. Los parches 001–010 cubren las incompatibilidades conocidas (001–009 compatibilidad con commits antiguos + 010 prefix versionado). La **Fase 2 (builds subversioned)** quedó implementada y probada localmente (ver sección "2026-07-31 — Fase 2"), y la **reestructuración del pipeline** (build siempre `.deb` + conversión `deb2pkg.sh` a `.pkg.tar.xz` + deps versionadas con `-F`) quedó implementada y verificada localmente (ver sección "2026-07-31 — Reestructuración"). Falta resolver el exit 2 de `termux_step_make_install`, validar la fase 2 y el nuevo pipeline con builds reales en GHA, y hacer commit/push.
