@@ -189,16 +189,17 @@ jobs:
           git clone --depth=1 --filter=blob:none --sparse \
             https://github.com/termux/termux-packages.git /tmp/termux-master
           cd /tmp/termux-master
-          git sparse-checkout set scripts build-package.sh
+          git sparse-checkout set scripts
+          
+          echo "Downloading build-package.sh..."
+          curl -sL -o build-package.sh \
+            "https://raw.githubusercontent.com/termux/termux-packages/master/build-package.sh"
+          chmod +x build-package.sh
           
           echo "Replacing build system files..."
-          cp /tmp/termux-master/build-package.sh \
-            "${GITHUB_WORKSPACE}/termux-packages/build-package.sh"
-          chmod +x "${GITHUB_WORKSPACE}/termux-packages/build-package.sh"
-          
+          cp build-package.sh "${GITHUB_WORKSPACE}/termux-packages/build-package.sh"
           rm -rf "${GITHUB_WORKSPACE}/termux-packages/scripts"
-          cp -r /tmp/termux-master/scripts \
-            "${GITHUB_WORKSPACE}/termux-packages/scripts"
+          cp -r scripts "${GITHUB_WORKSPACE}/termux-packages/scripts"
           
           rm -rf /tmp/termux-master
           echo "Done. Build system updated from master."
