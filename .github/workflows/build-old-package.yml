@@ -182,35 +182,26 @@ jobs:
           echo "Extracted version: ${VERSION}"
 
       # ── 3. Compilar el paquete ──
-      - name: Download latest run-docker.sh and profiles
+      - name: Fetch build system from master
         shell: bash
         run: |
-          BASE="https://raw.githubusercontent.com/termux/termux-packages/master"
-
-          echo "Downloading latest run-docker.sh..."
-          curl -sL -o termux-packages/scripts/run-docker.sh \
-            "$BASE/scripts/run-docker.sh"
-          chmod +x termux-packages/scripts/run-docker.sh
-
-          echo "Downloading helper scripts..."
-          mkdir -p termux-packages/scripts/utils/docker
-          curl -sL -o termux-packages/scripts/utils/docker/docker.sh \
-            "$BASE/scripts/utils/docker/docker.sh" 2>/dev/null || true
-
-          echo "Downloading AppArmor profiles..."
-          curl -sL -o termux-packages/scripts/profile-relaxed.apparmor \
-            "$BASE/scripts/profile-relaxed.apparmor" 2>/dev/null || true
-          curl -sL -o termux-packages/scripts/profile-restricted.apparmor \
-            "$BASE/scripts/profile-restricted.apparmor" 2>/dev/null || true
-
-          echo "Downloading seccomp profile..."
-          curl -sL -o termux-packages/scripts/profile.json \
-            "$BASE/scripts/profile.json" 2>/dev/null || true
-
-          echo "Downloading build-package.sh..."
-          curl -sL -o termux-packages/build-package.sh \
-            "$BASE/build-package.sh" 2>/dev/null || true
-          chmod +x termux-packages/build-package.sh
+          echo "Cloning scripts/ from termux-packages master..."
+          git clone --depth=1 --filter=blob:none --sparse \
+            https://github.com/termux/termux-packages.git /tmp/termux-master
+          cd /tmp/termux-master
+          git sparse-checkout set scripts build-package.sh
+          
+          echo "Replacing build system files..."
+          cp /tmp/termux-master/build-package.sh \
+            "${GITHUB_WORKSPACE}/termux-packages/build-package.sh"
+          chmod +x "${GITHUB_WORKSPACE}/termux-packages/build-package.sh"
+          
+          rm -rf "${GITHUB_WORKSPACE}/termux-packages/scripts"
+          cp -r /tmp/termux-master/scripts \
+            "${GITHUB_WORKSPACE}/termux-packages/scripts"
+          
+          rm -rf /tmp/termux-master
+          echo "Done. Build system updated from master."
 
       - name: Build package
         shell: bash
