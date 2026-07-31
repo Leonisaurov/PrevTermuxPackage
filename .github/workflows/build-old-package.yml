@@ -195,6 +195,10 @@ jobs:
           curl -sL -o build-package.sh \
             "https://raw.githubusercontent.com/termux/termux-packages/master/build-package.sh"
           chmod +x build-package.sh
+
+          echo "Downloading repo.json..."
+          curl -sL -o "${GITHUB_WORKSPACE}/termux-packages/repo.json" \
+            "https://raw.githubusercontent.com/termux/termux-packages/master/repo.json" 2>/dev/null || true
           
           echo "Replacing build system files..."
           cp build-package.sh "${GITHUB_WORKSPACE}/termux-packages/build-package.sh"
