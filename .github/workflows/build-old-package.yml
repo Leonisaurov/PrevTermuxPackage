@@ -207,6 +207,11 @@ jobs:
           curl -sL -o termux-packages/scripts/profile.json \
             "$BASE/scripts/profile.json" 2>/dev/null || true
 
+          echo "Downloading build-package.sh..."
+          curl -sL -o termux-packages/build-package.sh \
+            "$BASE/build-package.sh" 2>/dev/null || true
+          chmod +x termux-packages/build-package.sh
+
       - name: Build package
         shell: bash
         working-directory: termux-packages
