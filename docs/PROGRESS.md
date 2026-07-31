@@ -73,22 +73,31 @@ patching file Cargo.toml
 5. Localmente con sed simplificado (4 reglas) da exit 0
 6. CI usa sed completo: 11 reglas `@TERMUX_*@` + 2 normalización
 
-### Hipótesis principal
+### Hipótesis principal (REFUTADA por run 30614617305)
 
-Alguna variable `TERMUX_ENV__S_*` podría estar **UNSET** en el contenedor → el sed completo genera patch corrupto/vacío → patch recibe basura → exit 2 (*"Only garbage"*)
+~~Alguna variable TERMUX_ENV__S_* podría estar UNSET en el contenedor → sed completo genera patch corrupto/vacío → patch recibe basura → exit 2 ("Only garbage")~~
+
+**Evidencia del run 30614617305:**
+- DEBUG VARS: TODAS SET (ninguna UNSET)
+- SED EXIT: 0, SED STDERR: vacío
+- PATCH EXIT: 0 (patching file Cargo.toml, aplicó correctamente)
+- El exit 2 ocurre ~63ms DESPUÉS del último debug (post-patch)
+- Conclusión: el parche 007 FUNCIONA; el fallo está en un paso posterior
 
 ### Estado
 
-- Run **30614617305** lanzado con debug que imprime: `DEBUG VARS` (valores/unset), `SED EXIT`, `SED STDERR`, `PATCH EXIT`, `PATCH STDERR`
-- Resultado **SIN VERIFICAR aún**
+- Run 30614617305 completado: hipótesis UNSET refutada
+- Parche 007 confirmado funcional (PATCH EXIT 0)
+- Nuevo foco: el exit 2 ocurre DESPUÉS de termux_step_patch_package (paso posterior no identificado)
+- Patch 008 (debug post-patch con marcadores) creado, pendiente de probar en CI
 
 ## Pendientes
 
 ### Inmediatos
 
-- [ ] Verificar log del run 30614617305 (debug de stderr)
-- [ ] Aplicar fix definitivo del exit 2
-- [ ] Limpiar debug del patch 007 (dejar solo lo necesario)
+- [ ] Probar el patch 008 (marcadores post-patch) en CI para identificar el paso que falla con exit 2
+- [ ] Aplicar fix definitivo del exit 2 real
+- [ ] Limpiar debug de patches 007 y 008 (dejar solo lo necesario)
 
 ### Pruebas de regresión
 

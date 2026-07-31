@@ -1,0 +1,51 @@
+--- a/build-package.sh
++++ b/build-package.sh
+@@ -759,28 +759,48 @@
+ 			termux_step_handle_host_build
+ 		fi
+ 
++		echo "MARKER: >>> setup_toolchain"
+ 		termux_step_setup_toolchain
++		echo "MARKER: <<< setup_toolchain OK (exit=$?)"
+ 
+ 		if [[ "$TERMUX_CONTINUE_BUILD" == "false" ]]; then
++			echo "MARKER: >>> get_dependencies_python"
+ 			termux_step_get_dependencies_python
++			echo "MARKER: <<< get_dependencies_python OK (exit=$?)"
++			echo "MARKER: >>> patch_package"
+ 			termux_step_patch_package
++			echo "MARKER: <<< patch_package OK (exit=$?)"
++			echo "MARKER: >>> replace_guess_scripts"
+ 			termux_step_replace_guess_scripts
++			echo "MARKER: <<< replace_guess_scripts OK (exit=$?)"
++			echo "MARKER: >>> cd SRCDIR + pre_configure"
+ 			cd "$TERMUX_PKG_SRCDIR"
+ 			termux_step_pre_configure
++			echo "MARKER: <<< pre_configure OK (exit=$?)"
+ 		fi
+ 
+ 		# Even on continued build we might need to setup paths
+ 		# to tools so need to run part of configure step
++		echo "MARKER: >>> configure"
+ 		termux_run_base_and_multilib_build_step termux_step_configure
++		echo "MARKER: <<< configure OK (exit=$?)"
+ 
+ 		if [[ "$TERMUX_CONTINUE_BUILD" == "false" ]]; then
++			echo "MARKER: >>> post_configure"
+ 			cd "$TERMUX_PKG_BUILDDIR"
+ 			termux_step_post_configure
++			echo "MARKER: <<< post_configure OK (exit=$?)"
+ 		fi
++		echo "MARKER: >>> make"
+ 		termux_run_base_and_multilib_build_step termux_step_make
++		echo "MARKER: <<< make OK (exit=$?)"
++		echo "MARKER: >>> make_install"
+ 		termux_run_base_and_multilib_build_step termux_step_make_install
++		echo "MARKER: <<< make_install OK (exit=$?)"
++		echo "MARKER: >>> post_make_install"
+ 		cd "$TERMUX_PKG_BUILDDIR"
+ 		termux_step_post_make_install
++		echo "MARKER: <<< post_make_install OK (exit=$?)"
+ 		termux_step_install_pacman_hooks
+ 		termux_step_install_service_scripts
+ 		termux_step_install_license
