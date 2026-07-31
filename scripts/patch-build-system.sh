@@ -43,8 +43,8 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
         -e 's/TERMUX_DEBDIR/TERMUX_OUTPUT_DIR/g' \
         -e 's/TERMUX_MAKE_PROCESSES/TERMUX_PKG_MAKE_PROCESSES/g' \
         -e 's/TERMUX_PKG_NO_DEVELSPLIT/TERMUX_PKG_NO_STATICSPLIT/g' \
-        -e 's/\(TERMUX_PKG_[A-Z_]*=\).*yes/\1true/g' \
-        -e 's/\(TERMUX_PKG_[A-Z_]*=\).*no/\1false/g' \
+        -e 's/^\(TERMUX_PKG_[A-Z_]*\)=yes$/\1=true/g' \
+        -e 's/^\(TERMUX_PKG_[A-Z_]*\)=no$/\1=false/g' \
         "$f"
 done || true
 
