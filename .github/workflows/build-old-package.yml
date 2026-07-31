@@ -203,6 +203,10 @@ jobs:
           curl -sL -o termux-packages/scripts/profile-restricted.apparmor \
             "$BASE/scripts/profile-restricted.apparmor" 2>/dev/null || true
 
+          echo "Downloading seccomp profile..."
+          curl -sL -o termux-packages/scripts/profile.json \
+            "$BASE/scripts/profile.json" 2>/dev/null || true
+
       - name: Build package
         shell: bash
         working-directory: termux-packages
