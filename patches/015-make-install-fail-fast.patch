@@ -1,0 +1,18 @@
+--- a/scripts/build/termux_step_make_install.sh
++++ b/scripts/build/termux_step_make_install.sh
+@@ -50,10 +50,13 @@
+ 			--root $TERMUX_PREFIX \
+ 			$CARGO_DEBUG_FLAG \
+ 			$TERMUX_PKG_EXTRA_CONFIGURE_ARGS 2>&1 | tee /tmp/cargo-install.log; exit ${PIPESTATUS[0]} ) || {
+-			echo "DEBUG-MI: cargo install FALLÓ con exit $?"
++			rc=$?
++			echo "DEBUG-MI: cargo install FALLÓ con exit $rc"
+ 			echo "DEBUG-MI: Últimas 40 líneas del stderr:"
+ 			tail -40 /tmp/cargo-install.log 2>/dev/null
+-			# no exit aquí - deja que el script continúe y falle naturalmente con set -e
++			# Legacy compatibility: fail fast — propagate the real cargo install
++			# exit code so the pipeline does not package an incomplete prefix.
++			termux_error_exit "cargo install failed with exit $rc"
+ 		}
+ 	fi
+ }
