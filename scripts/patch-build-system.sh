@@ -95,6 +95,11 @@ fi
 echo "[10/17] Normalizando variables legacy en build.sh..."
 find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     -name build.sh 2>/dev/null | while read -r f; do
+    # Legacy compatibility: ncurses 6.1.20180707 (commit e4f2135, 2018) usaba
+    # una URL de dl.bintray.com (cerrado en 2021 -> 404). Se sustituye por el
+    # snapshot equivalente del repo de desarrollo de ncurses (mismo arbol del
+    # 2018-07-07, commit b69347e) y su hash SHA256. Regla idempotente: sed no
+    # toca nada si el patron ya no esta presente en el build.sh.
     sed -i \
         -e 's/TERMUX_PKG_BLACKLISTED_ARCHES=/TERMUX_PKG_EXCLUDED_ARCHES=/g' \
         -e 's/TERMUX_DEBDIR/TERMUX_OUTPUT_DIR/g' \
@@ -102,6 +107,8 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
         -e 's/TERMUX_PKG_NO_DEVELSPLIT/TERMUX_PKG_NO_STATICSPLIT/g' \
         -e 's/^\(TERMUX_PKG_[A-Z_]*\)=yes$/\1=true/g' \
         -e 's/^\(TERMUX_PKG_[A-Z_]*\)=no$/\1=false/g' \
+        -e 's|https://dl\.bintray\.com/termux/upstream/ncurses-\${TERMUX_PKG_VERSION:0:3}-\${TERMUX_PKG_VERSION:4}\.tgz|https://github.com/ThomasDickey/ncurses-snapshots/archive/b69347e952d596f8a3799b11a28080f8fd716511.tar.gz|g' \
+        -e 's|78c92a14f3640582dcc69ea90b2043d6f08327be5ee1ad4c98ee7135565e5dfa|d6e9758d3b51dbaa582b1cdf6a2749e29bc6b03638b05be8b974a0cdb6fdf019|g' \
         "$f"
 done || true
 
