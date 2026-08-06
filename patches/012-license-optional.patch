@@ -1,6 +1,6 @@
 --- a/scripts/build/termux_step_install_license.sh
 +++ b/scripts/build/termux_step_install_license.sh
-@@ -4,9 +4,13 @@
+@@ -4,9 +4,16 @@
  
  	mkdir -p "$TERMUX_PREFIX/share/doc/$TERMUX_PKG_NAME"
  	local LICENSE COUNTER=0
@@ -8,6 +8,9 @@
 +	# TERMUX_PKG_LICENSE / TERMUX_PKG_LICENSE_FILE; make both safe under set -u.
 +	: "${TERMUX_PKG_LICENSE_FILE:=}"
 +	: "${TERMUX_PKG_LICENSE:=}"
++	if [[ -z "$TERMUX_PKG_LICENSE" && -z "$TERMUX_PKG_LICENSE_FILE" ]]; then
++		return 0
++	fi
  
  	# Was a license file specified?
 -	if [[ -n "${TERMUX_PKG_LICENSE_FILE}" ]]; then
