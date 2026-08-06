@@ -13,10 +13,10 @@
 +		# Extract _MAJOR_VERSION without sourcing the full build.sh
 +		# (old build.sh files have executable code that fails when sourced)
 +		_PY_BUILD="$TERMUX_SCRIPTDIR/packages/python/build.sh"
-+		_MAJOR_VERSION="$(grep -oP '^_MAJOR_VERSION=\K.+' "$_PY_BUILD" 2>/dev/null | head -1 | tr -d '"' | tr -d "'" | tr -d ' ')"
++		_MAJOR_VERSION="$(grep -oP '^_MAJOR_VERSION=\K.+' "$_PY_BUILD" 2>/dev/null | head -1 | tr -d '"' | tr -d "'" | tr -d ' ' || true)"
 +		if [[ -z "$_MAJOR_VERSION" ]]; then
 +			# Fallback: derive from TERMUX_PKG_VERSION
-+			_MAJOR_VERSION="$(grep -oP '^TERMUX_PKG_VERSION=\K.+' "$_PY_BUILD" 2>/dev/null | head -1 | tr -d '"' | tr -d "'" | cut -d. -f1-2)"
++			_MAJOR_VERSION="$(grep -oP '^TERMUX_PKG_VERSION=\K.+' "$_PY_BUILD" 2>/dev/null | head -1 | tr -d '"' | tr -d "'" | cut -d. -f1-2 || true)"
  		fi
 -		echo "$_MAJOR_VERSION"
 +		echo "${_MAJOR_VERSION:-3.12}"
@@ -37,7 +37,7 @@
 +			_LLVM_BUILD="$TERMUX_SCRIPTDIR/packages/clang/build.sh"
  		fi
 -		echo "$TERMUX_PKG_VERSION"
-+		grep -oP '^TERMUX_PKG_VERSION=\K.+' "$_LLVM_BUILD" 2>/dev/null | head -1 | tr -d '"' | tr -d "'" | tr -d ' '
++		grep -oP '^TERMUX_PKG_VERSION=\K.+' "$_LLVM_BUILD" 2>/dev/null | head -1 | tr -d '"' | tr -d "'" | tr -d ' ' || true
  	)"
 +	TERMUX_LLVM_VERSION="${TERMUX_LLVM_VERSION:-7.0.0}"
  	TERMUX_LLVM_MAJOR_VERSION="${TERMUX_LLVM_VERSION%%.*}"

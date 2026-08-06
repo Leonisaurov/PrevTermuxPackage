@@ -11,29 +11,29 @@
 +		echo "DEBUG-MI: TERMUX_RUST_VERSION=${TERMUX_RUST_VERSION-UNSET}"
 +		echo "DEBUG-MI: RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN-UNSET}"
  		if [[ -z "$(command -v cargo)" ]]; then
- 			termux_error_exit "cargo command is not found! Please add termux_setup_rust in package's build.sh!"
- 		fi
-@@ -29,7 +35,10 @@
+ 			# Legacy compatibility: old build.sh files don't call termux_setup_rust
+ 			# (it was automatic until commit 030d411c9b, Oct 2025)
+@@ -31,7 +37,10 @@
  		if [[ "$TERMUX_DEBUG_BUILD" == "true" ]]; then
  			CARGO_DEBUG_FLAG='--debug'
  		fi
 -		cargo install \
 +		# Capturar stderr del cargo install: 2>&1 | tee captura TODO el output
-+		# a /tmp/cargo-install.log Y lo muestra en vivo. PIPESTATUS[0] preserva
++		# a "${TERMUX_PKG_TMPDIR:-$TMPDIR}/cargo-install.log" Y lo muestra en vivo. PIPESTATUS[0] preserva
 +		# el exit real de cargo aunque tee tenga éxito.
 +		( cargo install \
  			--jobs $TERMUX_PKG_MAKE_PROCESSES \
  			--path . \
  			--force \
-@@ -38,7 +47,12 @@
+@@ -40,7 +49,12 @@
  			--target $CARGO_TARGET_NAME \
  			--root $TERMUX_PREFIX \
  			$CARGO_DEBUG_FLAG \
 -			$TERMUX_PKG_EXTRA_CONFIGURE_ARGS
-+			$TERMUX_PKG_EXTRA_CONFIGURE_ARGS 2>&1 | tee /tmp/cargo-install.log; exit ${PIPESTATUS[0]} ) || {
++			$TERMUX_PKG_EXTRA_CONFIGURE_ARGS 2>&1 | tee "${TERMUX_PKG_TMPDIR:-$TMPDIR}/cargo-install.log"; exit ${PIPESTATUS[0]} ) || {
 +			echo "DEBUG-MI: cargo install FALLÓ con exit $?"
 +			echo "DEBUG-MI: Últimas 40 líneas del stderr:"
-+			tail -40 /tmp/cargo-install.log 2>/dev/null
++			tail -40 "${TERMUX_PKG_TMPDIR:-$TMPDIR}/cargo-install.log" 2>/dev/null
 +			# no exit aquí - deja que el script continúe y falle naturalmente con set -e
 +		}
  	fi
