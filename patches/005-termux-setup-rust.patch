@@ -9,9 +9,9 @@
 +		# (old commits may not have packages/rust/build.sh, or have executable code)
 +		TERMUX_RUST_VERSION="$(grep -oP '^TERMUX_PKG_VERSION=\K.+' \
 +			"${TERMUX_SCRIPTDIR}/packages/rust/build.sh" 2>/dev/null | head -1 \
-+			| tr -d '"' | tr -d "'" | tr -d ' ')"
++			| tr -d '"' | tr -d "'" | tr -d ' ' || true)"
 +		# Fallback to a stable toolchain if unavailable
-+		TERMUX_RUST_VERSION="${TERMUX_RUST_VERSION:-1.75.0}"
++		TERMUX_RUST_VERSION="${TERMUX_RUST_VERSION:-1.31.0}"
  	fi
  	if [[ "${TERMUX_RUST_VERSION}" == *"~beta"* ]]; then
  		TERMUX_RUST_VERSION="beta"
