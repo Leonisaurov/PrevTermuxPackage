@@ -1,0 +1,17 @@
+--- a/scripts/build/termux_step_install_license.sh
++++ b/scripts/build/termux_step_install_license.sh
+@@ -4,9 +4,13 @@
+ 
+ 	mkdir -p "$TERMUX_PREFIX/share/doc/$TERMUX_PKG_NAME"
+ 	local LICENSE COUNTER=0
++	# Legacy compatibility: old build.sh files (2018-2023) don't always set
++	# TERMUX_PKG_LICENSE / TERMUX_PKG_LICENSE_FILE; make both safe under set -u.
++	: "${TERMUX_PKG_LICENSE_FILE:=}"
++	: "${TERMUX_PKG_LICENSE:=}"
+ 
+ 	# Was a license file specified?
+-	if [[ -n "${TERMUX_PKG_LICENSE_FILE}" ]]; then
++	if [[ -n "${TERMUX_PKG_LICENSE_FILE:-}" ]]; then
+ 		COUNTER=1
+ 		local LICENSE_FILEPATH
+ 		local -A INSTALLED_LICENSES=()

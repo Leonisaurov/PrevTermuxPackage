@@ -1,0 +1,18 @@
+--- a/scripts/build/termux_step_make_install.sh
++++ b/scripts/build/termux_step_make_install.sh
+@@ -22,6 +22,7 @@
+ 			make -j 1 ${TERMUX_PKG_EXTRA_MAKE_ARGS} ${TERMUX_PKG_MAKE_INSTALL_TARGET}
+ 		fi
+ 	elif test -f Cargo.toml; then
++		# Legacy compatibility: remove --no-track for old cargo toolchains
+ 		# DEBUG-MI: instrumentación para capturar el stderr REAL del fallo silencioso (exit 2)
+ 		echo "DEBUG-MI: Cargo.toml detectado, path=$(pwd)"
+ 		echo "DEBUG-MI: command -v cargo = $(command -v cargo 2>&1 || echo 'NOT FOUND')"
+@@ -45,7 +46,6 @@
+ 			--path . \
+ 			--force \
+ 			--locked \
+-			--no-track \
+ 			--target $CARGO_TARGET_NAME \
+ 			--root $TERMUX_PREFIX \
+ 			$CARGO_DEBUG_FLAG \
