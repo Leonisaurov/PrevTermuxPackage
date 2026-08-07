@@ -121,6 +121,15 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     # exacta, sin lista), por eso la regla borra la linea anclada; es
     # idempotente: tras la primera pasada el patron ya no esta presente y sed
     # no toca nada mas.
+    # Legacy compatibility: bash 4.4.23 (commit e4f2135, 2018) se compila con
+    # prototipos C estilo K&R (void line_error(); static char *xmalloc();). El
+    # compilador moderno (C23/clang nuevo) interpreta "()" como "(void)" y el
+    # make de builtins/mkbuiltins.c falla con "too many arguments to function
+    # 'line_error'; expected 0, have 3". Se fuerza -std=gnu89 en CFLAGS (en
+    # gnu89 los prototipos vacios siguen siendo K&R). Regla idempotente: tras la
+    # 1a pasada la linea CFLAGS ya sigue a la ancla y el guard deja de matchear.
+    # NOTA: usa N + guard de lookahead, no un s/// simple (que no seria
+    # idempotente porque la ancla sola seguiria matcheando en una 2a pasada).
     sed -i \
         -e 's/TERMUX_PKG_BLACKLISTED_ARCHES=/TERMUX_PKG_EXCLUDED_ARCHES=/g' \
         -e 's/TERMUX_DEBDIR/TERMUX_OUTPUT_DIR/g' \
@@ -133,6 +142,10 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
         -e 's|https://fossies\.org/linux/misc/rxvt-unicode-\${TERMUX_PKG_VERSION\[1\]}\.tar\.bz2|https://deb.debian.org/debian/pool/main/r/rxvt-unicode/rxvt-unicode_${TERMUX_PKG_VERSION[1]}.orig.tar.bz2|g' \
         -e 's|--with-pkg-config-libdir=\$PKG_CONFIG_LIBDIR|--with-pkg-config-libdir=\$TERMUX_PREFIX/lib/pkgconfig|' \
         -e '/^TERMUX_PKG_DEPENDS="termux-am"$/d' \
+        -e '/^TERMUX_PKG_RM_AFTER_INSTALL="share\/man\/man1\/bashbug\.1 bin\/bashbug"$/{
+N
+/^TERMUX_PKG_RM_AFTER_INSTALL="share\/man\/man1\/bashbug\.1 bin\/bashbug"\nCFLAGS+=" -std=gnu89"$/!s|^TERMUX_PKG_RM_AFTER_INSTALL="share/man/man1/bashbug\.1 bin/bashbug"\n|TERMUX_PKG_RM_AFTER_INSTALL="share/man/man1/bashbug\.1 bin/bashbug"\nCFLAGS+=" -std=gnu89"\n|
+}' \
         "$f"
 done || true
 
