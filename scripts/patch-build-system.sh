@@ -103,6 +103,12 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     # Legacy compatibility: la 2a fuente (rxvt-unicode via fossies.org) devuelve
     # HTTP 410/401 desde 2024. Se sustituye por el mirror byte-idéntico de Debian
     # pool (mismo contenido, hash SHA256 e94628e9 sin cambios).
+    # Legacy compatibility: el build system moderno define PKG_CONFIG_LIBDIR como
+    # una LISTA separada por ':' (lib/pkgconfig:share/pkgconfig) desde el commit
+    # 3f1be51372 (nov-2022). Los build.sh de 2018 pasaban esa lista literal a
+    # --with-pkg-config-libdir y ncurses creaba un directorio con ':' en el nombre,
+    # por lo que el "cd pkgconfig" del post_make_install fallaba ("No such file or
+    # directory"). Se fija la ruta única $TERMUX_PREFIX/lib/pkgconfig como hace master.
     sed -i \
         -e 's/TERMUX_PKG_BLACKLISTED_ARCHES=/TERMUX_PKG_EXCLUDED_ARCHES=/g' \
         -e 's/TERMUX_DEBDIR/TERMUX_OUTPUT_DIR/g' \
@@ -113,6 +119,7 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
         -e 's|https://dl\.bintray\.com/termux/upstream/ncurses-\${TERMUX_PKG_VERSION:0:3}-\${TERMUX_PKG_VERSION:4}\.tgz|https://github.com/ThomasDickey/ncurses-snapshots/archive/b69347e952d596f8a3799b11a28080f8fd716511.tar.gz|g' \
         -e 's|78c92a14f3640582dcc69ea90b2043d6f08327be5ee1ad4c98ee7135565e5dfa|d6e9758d3b51dbaa582b1cdf6a2749e29bc6b03638b05be8b974a0cdb6fdf019|g' \
         -e 's|https://fossies\.org/linux/misc/rxvt-unicode-\${TERMUX_PKG_VERSION\[1\]}\.tar\.bz2|https://deb.debian.org/debian/pool/main/r/rxvt-unicode/rxvt-unicode_${TERMUX_PKG_VERSION[1]}.orig.tar.bz2|g' \
+        -e 's|--with-pkg-config-libdir=\$PKG_CONFIG_LIBDIR|--with-pkg-config-libdir=\$TERMUX_PREFIX/lib/pkgconfig|' \
         "$f"
 done || true
 
