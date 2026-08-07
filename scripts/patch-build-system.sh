@@ -109,6 +109,18 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     # --with-pkg-config-libdir y ncurses creaba un directorio con ':' en el nombre,
     # por lo que el "cd pkgconfig" del post_make_install fallaba ("No such file or
     # directory"). Se fija la ruta única $TERMUX_PREFIX/lib/pkgconfig como hace master.
+    # Legacy compatibility: termux-am 0.2 (2018) se compila con Gradle 4.1
+    # (gradle-4.1-all.zip), que no soporta el Java 17.0.19 del runner de GitHub
+    # ("Could not determine java version from '17.0.19'") y el build del paquete
+    # falla. termux-am es una app Android auxiliar, no necesaria en runtime para
+    # bash, asi que se ELIMINA la linea completa TERMUX_PKG_DEPENDS de
+    # termux-tools. No basta con vaciarla (TERMUX_PKG_DEPENDS=""): buildorder.py
+    # hace re.split(',|\|', '') que produce [''] y reporta la dep inexistente
+    # "Package termux-tools depends on non-existing package ''". En el commit
+    # e4f2135 la dep solo existe como TERMUX_PKG_DEPENDS="termux-am" (linea
+    # exacta, sin lista), por eso la regla borra la linea anclada; es
+    # idempotente: tras la primera pasada el patron ya no esta presente y sed
+    # no toca nada mas.
     sed -i \
         -e 's/TERMUX_PKG_BLACKLISTED_ARCHES=/TERMUX_PKG_EXCLUDED_ARCHES=/g' \
         -e 's/TERMUX_DEBDIR/TERMUX_OUTPUT_DIR/g' \
@@ -120,6 +132,7 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
         -e 's|78c92a14f3640582dcc69ea90b2043d6f08327be5ee1ad4c98ee7135565e5dfa|d6e9758d3b51dbaa582b1cdf6a2749e29bc6b03638b05be8b974a0cdb6fdf019|g' \
         -e 's|https://fossies\.org/linux/misc/rxvt-unicode-\${TERMUX_PKG_VERSION\[1\]}\.tar\.bz2|https://deb.debian.org/debian/pool/main/r/rxvt-unicode/rxvt-unicode_${TERMUX_PKG_VERSION[1]}.orig.tar.bz2|g' \
         -e 's|--with-pkg-config-libdir=\$PKG_CONFIG_LIBDIR|--with-pkg-config-libdir=\$TERMUX_PREFIX/lib/pkgconfig|' \
+        -e '/^TERMUX_PKG_DEPENDS="termux-am"$/d' \
         "$f"
 done || true
 
