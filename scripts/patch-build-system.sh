@@ -125,11 +125,39 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     # prototipos C estilo K&R (void line_error(); static char *xmalloc();). El
     # compilador moderno (C23/clang nuevo) interpreta "()" como "(void)" y el
     # make de builtins/mkbuiltins.c falla con "too many arguments to function
-    # 'line_error'; expected 0, have 3". Se fuerza -std=gnu89 en CFLAGS (en
-    # gnu89 los prototipos vacios siguen siendo K&R). Regla idempotente: tras la
-    # 1a pasada la linea CFLAGS ya sigue a la ancla y el guard deja de matchear.
-    # NOTA: usa N + guard de lookahead, no un s/// simple (que no seria
-    # idempotente porque la ancla sola seguiria matcheando en una 2a pasada).
+    # 'line_error'; expected 0, have 3". Se fuerza -std=gnu89 (en gnu89 los
+    # prototipos vacios siguen siendo K&R) en DOS frentes (diagnostico del run
+    # 31223484353: la CFLAGS top-level era clobbered y no llegaba a ningun
+    # compile, y grep -c gnu89 = 0):
+    # 1) Los build-tools HOST (mkbuiltins.c y otros) los compila el Makefile de
+    #    bash con la variable CCFLAGS_FOR_BUILD (gcc del host), NO con CFLAGS.
+    #    Se fuerza CCFLAGS_FOR_BUILD=-g -DCROSS_COMPILING -std=gnu89 via
+    #    TERMUX_PKG_EXTRA_MAKE_ARGS (override del default del Makefile). bash
+    #    no la define en e4f2135, asi que no hay duplicacion.
+    # 2) El cross-compile usa CFLAGS, pero la definicion a top-level del
+    #    build.sh se evalua al sourcear (antes del setup del toolchain) y es
+    #    sobrescrita despues; por eso se exporta DENTRO de
+    #    termux_step_pre_configure (que corre despues del setup del toolchain).
+    #    El guard declara que la siguiente linea es "declare -A PATCH_CHECKSUMS"
+    #    (unico de bash; la ancla termux_step_pre_configure sola existe en 76
+    #    paquetes), y se usa P+D para que la linea consumida por N reciba su
+    #    ciclo normal (no rompe el build.sh de otros paquetes).
+    #    Evidencia en e4f2135 (packages/bash/build.sh): L25
+    #    TERMUX_PKG_RM_AFTER_INSTALL="share/man/man1/bashbug.1 bin/bashbug",
+    #    L26 blank, L27 "termux_step_pre_configure () {", L28 tab +
+    #    "declare -A PATCH_CHECKSUMS" (INMEDIATA: solo indentacion tab entre
+    #    ambas, sin blank lines ni comentarios; el [[:space:]]* del guard la
+    #    tolera). La linea tras la ancla de EXTRA_MAKE_ARGS (L26) es una blank
+    #    line, no una variable legacy. bash NO define TERMUX_PKG_EXTRA_MAKE_ARGS
+    #    ni CCFLAGS_FOR_BUILD en ningun punto (git grep, e4f2135).
+    # El bloque se ejecuta en DOS seds: FASE 1 = normalizacion global (s///
+    # linea a linea, sin N; toda linea pasa por todas las reglas), FASE 2 =
+    # inserciones con lookahead (N + guard + P/D). Asi, la linea que queda
+    # justo tras una ancla (p.ej. un TERMUX_PKG_*=yes tras RM_AFTER) ya quedo
+    # normalizada (=true) en la FASE 1 antes de que la FASE 2 la consuma con N.
+    # Ambas fases son idempotentes (N + guard de lookahead): tras la 1a pasada
+    # la linea ya esta presente y el guard deja de matchear en una 2a pasada.
+    # FASE 1: normalizacion global linea a linea.
     sed -i \
         -e 's/TERMUX_PKG_BLACKLISTED_ARCHES=/TERMUX_PKG_EXCLUDED_ARCHES=/g' \
         -e 's/TERMUX_DEBDIR/TERMUX_OUTPUT_DIR/g' \
@@ -142,9 +170,18 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
         -e 's|https://fossies\.org/linux/misc/rxvt-unicode-\${TERMUX_PKG_VERSION\[1\]}\.tar\.bz2|https://deb.debian.org/debian/pool/main/r/rxvt-unicode/rxvt-unicode_${TERMUX_PKG_VERSION[1]}.orig.tar.bz2|g' \
         -e 's|--with-pkg-config-libdir=\$PKG_CONFIG_LIBDIR|--with-pkg-config-libdir=\$TERMUX_PREFIX/lib/pkgconfig|' \
         -e '/^TERMUX_PKG_DEPENDS="termux-am"$/d' \
+        "$f"
+    # FASE 2: inserciones con lookahead (N + guard + P/D).
+    sed -i \
+        -e '/^termux_step_pre_configure () {$/{
+N
+/^termux_step_pre_configure () {\n[[:space:]]*declare -A PATCH_CHECKSUMS/s/^termux_step_pre_configure () {\n/termux_step_pre_configure () {\nexport CFLAGS="$CFLAGS -std=gnu89"\n/
+P
+D
+}' \
         -e '/^TERMUX_PKG_RM_AFTER_INSTALL="share\/man\/man1\/bashbug\.1 bin\/bashbug"$/{
 N
-/^TERMUX_PKG_RM_AFTER_INSTALL="share\/man\/man1\/bashbug\.1 bin\/bashbug"\nCFLAGS+=" -std=gnu89"$/!s|^TERMUX_PKG_RM_AFTER_INSTALL="share/man/man1/bashbug\.1 bin/bashbug"\n|TERMUX_PKG_RM_AFTER_INSTALL="share/man/man1/bashbug\.1 bin/bashbug"\nCFLAGS+=" -std=gnu89"\n|
+/^TERMUX_PKG_RM_AFTER_INSTALL="share\/man\/man1\/bashbug\.1 bin\/bashbug"\nTERMUX_PKG_EXTRA_MAKE_ARGS="CCFLAGS_FOR_BUILD=-g -DCROSS_COMPILING -std=gnu89"$/!s|^TERMUX_PKG_RM_AFTER_INSTALL="share/man/man1/bashbug\.1 bin\/bashbug"\n|TERMUX_PKG_RM_AFTER_INSTALL="share/man/man1/bashbug\.1 bin\/bashbug"\nTERMUX_PKG_EXTRA_MAKE_ARGS="CCFLAGS_FOR_BUILD=-g -DCROSS_COMPILING -std=gnu89"\n|
 }' \
         "$f"
 done || true
