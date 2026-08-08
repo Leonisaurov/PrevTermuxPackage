@@ -136,13 +136,23 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     #    (make -j N ${VAR}) y el field splitting de bash divide el valor por
     #    espacios ("make: invalid option -- 'D'"); los backslashes NO escapan
     #    el espacio en una expansion sin comillas (verificado con GNU make 4.4.1:
-    #    mismo error con y sin backslash). La solucion es parchear Makefile.in
-    #    (configure lo transforma en Makefile) en pre_configure con
-    #    "sed -i '/ -std=gnu89/! s|^CCFLAGS_FOR_BUILD *=|& -std=gnu89|' Makefile.in":
+    #    mismo error con y sin backslash). La solucion es parchear los Makefile.in
+    #    (configure los transforma en Makefile) en pre_configure con
+    #    "sed -i '/ -std=gnu89/! s|^CCFLAGS_FOR_BUILD *=|& -std=gnu89|' Makefile.in builtins/Makefile.in":
     #    anhade -std=gnu89 justo tras "CCFLAGS_FOR_BUILD =" sin tocar el resto
-    #    (conserva -g -DCROSS_COMPILING). pre_configure corre antes de configure
-    #    y con cwd=srcdir, asi que Makefile.in ya existe. La FASE 1 tambien
-    #    borra la linea TERMUX_PKG_EXTRA_MAKE_ARGS="CCFLAGS_FOR_BUILD=..." por
+    #    de la linea (ambos archivos usan la misma forma
+    #    "CCFLAGS_FOR_BUILD = $(BASE_CCFLAGS) $(CPPFLAGS_FOR_BUILD) $(CFLAGS_FOR_BUILD)",
+    #    linea 152 del Makefile.in raiz y linea 99 de builtins/Makefile.in en
+    #    bash-4.4, verificadas con tar -xzOf del tarball). El sed inyectado recibe
+    #    AMBOS archivos porque el sub-make builtins/ compila mkbuiltins.o (el
+    #    archivo que falla: "too many arguments to function 'line_error'") con SU
+    #    PROPIO CCFLAGS_FOR_BUILD definido en builtins/Makefile.in, NO con el del
+    #    Makefile raiz; ese es el frente 2 del fix (el frente 1, Makefile.in raiz,
+    #    ya cubria mksyntax/mksignames/buildsignames.o). Ambos archivos existen
+    #    siempre: son parte del tarball bash-4.4 (tar -tzf bash-4.4.tar.gz
+    #    confirma bash-4.4/builtins/Makefile.in). pre_configure corre antes de
+    #    configure y con cwd=srcdir, asi que ambos Makefile.in ya existen. La
+    #    FASE 1 tambien borra la linea TERMUX_PKG_EXTRA_MAKE_ARGS="CCFLAGS_FOR_BUILD=..." por
     #    si una version anterior de este script la dejo (make la re-dividiria y
     #    fallaria con el mismo error).
     # 2) El cross-compile usa CFLAGS, pero la definicion a top-level del
@@ -186,7 +196,7 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     sed -i \
         -e '/^termux_step_pre_configure () {$/{
 N
-/^termux_step_pre_configure () {\n[[:space:]]*declare -A PATCH_CHECKSUMS/s@^termux_step_pre_configure () {\n@termux_step_pre_configure () {\nexport CFLAGS="$CFLAGS -std=gnu89"\nsed -i "/ -std=gnu89/! s|^CCFLAGS_FOR_BUILD *=|\& -std=gnu89|" Makefile.in\n@
+/^termux_step_pre_configure () {\n[[:space:]]*declare -A PATCH_CHECKSUMS/s@^termux_step_pre_configure () {\n@termux_step_pre_configure () {\nexport CFLAGS="$CFLAGS -std=gnu89"\nsed -i "/ -std=gnu89/! s|^CCFLAGS_FOR_BUILD *=|\& -std=gnu89|" Makefile.in builtins/Makefile.in\n@
 P
 D
 }' \
