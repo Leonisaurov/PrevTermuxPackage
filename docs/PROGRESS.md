@@ -1,8 +1,10 @@
 # Progress Log — PrevTermuxPackage
 
-> Documento de estado/progreso del proyecto — fecha: 2026-07-31
+> Documento de estado/progreso del proyecto — fecha: 2026-08-08
 
 ## Estado actual (2026-07-31)
+
+> ⚠️ Superado (2026-08-08): el bloqueo histórico "exit 2 en `termux_step_make_install`" (bash @ e4f2135) quedó **resuelto** y validado en CI — ver sección "2026-08-08 — bash @ e4f2135 VERDE en CI (fix gnu89, fase 2)".
 
 ### Resumen ejecutivo
 
@@ -36,7 +38,7 @@
 | 11 | `cargo not found` | `make_install` ya no llama `termux_setup_rust` (desde oct-2025) | Patch 004 |
 | 12 | rust 0.7.1 (versión de bat) | `termux_setup_rust` sourcea `packages/rust` que no existe en 2018, captura `TERMUX_PKG_VERSION` del entorno | Patch 005 (grep+fallback) |
 | 13 | `BUILD_IN_SRC=yes` no interpretado | `start_build` compara con `"true"` estricto | Patch 006 (yes OR true) |
-| 14 | exit 2 en `termux_step_make_install` | EN INVESTIGACIÓN (ver abajo) | Patch 007 (parcial) |
+| 14 | exit 2 en `termux_step_make_install` (bash 4.4) | Sub-make `builtins/` compila `mkbuiltins.c` sin `-std=gnu89` (C23 vs prototipos K&R 2018) | Fix en `termux_step_pre_configure` (commit `b5cdf39`, bloque 10 FASE 2) |
 
 ### Parches creados (`patches/`)
 
@@ -57,6 +59,8 @@
 - Aplica parches con `patch -p1`, verifica con grep, salta si ya aplicado
 
 ## Problema actual: exit 2 en `termux_step_make_install` (EN INVESTIGACIÓN)
+
+> ✅ **RESUELTO (2026-08-08)**: la causa raíz era el sub-make `builtins/` de bash 4.4 compilando `builtins/mkbuiltins.c` sin `-std=gnu89` → fix commit `b5cdf39`, validado en CI (run 31235032686). Se conserva esta sección como log de la investigación; ver sección "2026-08-08".
 
 ### Síntoma
 
@@ -125,8 +129,8 @@
 
 ### Pendientes (Fase 2)
 
-- [ ] Prueba real en GHA de un build subversioned: **ncurses** (con deps) y **bash** (intérprete del sistema).
-- [ ] Commit/push de la fase 2 (cuando el usuario lo pida).
+- [ ] Prueba real en GHA de un build subversioned: **ncurses** (con deps) — `bash` ✅ (run 31235032686, ver sección 2026-08-08).
+- [x] Commit/push de la fase 2 — hecho (incluye el fix gnu89, commit `b5cdf39`, y AGENTS.md, commit `a2b9a9d`).
 - [ ] Limpiar debug de parches 007–009.
 - [x] Documentar el flujo (README/esquema/PROGRESS — actualizadas).
 
@@ -158,18 +162,48 @@
 
 ### Pendientes (reestructuración)
 
-- [ ] Prueba real en GHA: **ncurses** (con deps) y **bash** (intérprete del sistema) — validar pipeline .deb → deb2pkg.sh → .pkg.tar.xz y deps versionadas en condiciones reales.
+- [ ] Prueba real en GHA: **ncurses** (con deps) — validar pipeline .deb → deb2pkg.sh → .pkg.tar.xz y deps versionadas en condiciones reales (`bash` ✅ en run 31235032686, ver sección 2026-08-08).
 - [ ] Commit/push (cuando el usuario lo pida).
 - [ ] Limpiar debug de parches 007–009.
 
+## 2026-08-08 — bash @ e4f2135 VERDE en CI (fix gnu89, fase 2)
+
+### Contexto
+
+El bloqueo histórico "exit 2 en `termux_step_make_install`" y la deuda de `bash@e4f2135` (Fase 2) quedaron **resueltos** y validados en CI.
+
+### Causa raíz exacta
+
+- El sub-make `builtins/` de bash 4.4 usa su **propio** `builtins/Makefile.in`, con `CCFLAGS_FOR_BUILD = $(BASE_CCFLAGS) $(CPPFLAGS_FOR_BUILD) $(CFLAGS_FOR_BUILD)` (línea 99 de bash-4.4).
+- Los build-tools (mkbuiltins, mksyntax, mksignames) se compilan con el **gcc del HOST** usando `CCFLAGS_FOR_BUILD` (no `CFLAGS`, que se pierde a nivel top-level del `build.sh`).
+- `builtins/mkbuiltins.c` (2018, prototipos K&R `f()`) fallaba con compiladores C23 ("too many arguments") al compilar sin `-std=gnu89` → exit 2 silencioso en `termux_step_make_install`.
+
+### Fix aplicado
+
+- **commit `b5cdf39`**: el sed inyectado en `termux_step_pre_configure` de bash (bloque 10 FASE 2 de `scripts/patch-build-system.sh`, guard `declare -A PATCH_CHECKSUMS`) ahora parchea `Makefile.in` **y** `builtins/Makefile.in`, añadiendo `-std=gnu89` a `CCFLAGS_FOR_BUILD` en ambos.
+- **commit `a2b9a9d`**: `AGENTS.md` trackeado y actualizado (estado y lecciones).
+
+### Resultado CI
+
+- **Run 31235032686** (2026-08-08): **success en AMBOS jobs** (`build-normal` y `build-subversioned`).
+- Evidencia: `gcc -c -std=gnu89 ... builtins/mkbuiltins.c` en ambos jobs; `make` / `make_install` / `post_make_install` OK.
+- 9 `.deb` → `.pkg.tar.xz`; releases `bash-4.4.23-e4f2135` y `bash-4.4.23-e4f2135-subversioned` creados (18 assets cada uno).
+
+### Lección operativa
+
+- Usar SIEMPRE el **SHA completo** de termux-packages como `git_ref` en el `workflow_dispatch`: `actions/checkout@v4` NO fetchea SHAs abreviados (el run 31234975490 falló en el step "Checkout termux-packages" por eso).
+
 ## Pendientes
+
+### Resueltos (2026-08-08)
+
+- [x] Capturar stderr de `make_install` — RESUELTO: la causa raíz era el sub-make `builtins/` de bash 4.4 compilando `builtins/mkbuiltins.c` sin `-std=gnu89` (commit `b5cdf39`, run 31235032686). Ver sección 2026-08-08.
+- [x] Verificar si `termux_setup_rust` o `cargo install` falla — el exit 2 real NO era cargo/rust; era el build-tool de bash (`builtins/mkbuiltins.c`). Ver sección 2026-08-08.
+- [x] Aplicar fix definitivo del exit 2 real — commit `b5cdf39` (`-std=gnu89` en `Makefile.in` y `builtins/Makefile.in`), validado en CI (run 31235032686).
 
 ### Inmediatos
 
-- [ ] Capturar stderr de `make_install` (`2>&1 | tee` en el patch 008, o revisar artefactos)
-- [ ] Verificar si `termux_setup_rust` o `cargo install` falla
-- [ ] Aplicar fix definitivo del exit 2 real
-- [ ] Limpiar debug de patches 007 y 008 (dejar solo lo necesario)
+- [ ] Limpiar debug de parches 007–009 (incluye los marcadores DEBUG de 008/009 usados en la investigación del exit 2).
 
 ### Pruebas de regresión
 
@@ -179,7 +213,7 @@
 
 ### Documentación
 
-- [ ] Actualizar `docs/build-system-internals.md` con hallazgos de rust/setup_rust/patches
+- [ ] Actualizar `docs/build-system-internals.md` con hallazgos de rust/setup_rust/patches (si no están)
 - [ ] Documentar en README el flujo con parches
 - [ ] Known Issues (commits < 2019 pueden tener incompatibilidades no cubiertas)
 
@@ -190,4 +224,4 @@
 
 ## Conclusión
 
-El whack-a-mole reveló que el build system moderno y los commits 2018 son **MUY diferentes**. Los parches 001–010 cubren las incompatibilidades conocidas (001–009 compatibilidad con commits antiguos + 010 prefix versionado). La **Fase 2 (builds subversioned)** quedó implementada y probada localmente (ver sección "2026-07-31 — Fase 2"), y la **reestructuración del pipeline** (build siempre `.deb` + conversión `deb2pkg.sh` a `.pkg.tar.xz` + deps versionadas con `-F`) quedó implementada y verificada localmente (ver sección "2026-07-31 — Reestructuración"). Falta resolver el exit 2 de `termux_step_make_install`, validar la fase 2 y el nuevo pipeline con builds reales en GHA, y hacer commit/push.
+El whack-a-mole reveló que el build system moderno y los commits 2018 son **MUY diferentes**. Los parches 001–010 cubren las incompatibilidades conocidas (001–009 compatibilidad con commits antiguos + 010 prefix versionado). La **Fase 2 (builds subversioned)** quedó implementada y probada localmente (ver sección "2026-07-31 — Fase 2"), la **reestructuración del pipeline** (build siempre `.deb` + conversión `deb2pkg.sh` a `.pkg.tar.xz` + deps versionadas con `-F`) quedó implementada y verificada localmente (ver sección "2026-07-31 — Reestructuración"), y el **bloqueo histórico del exit 2** (bash @ e4f2135: sub-make `builtins/` sin `-std=gnu89`) quedó **resuelto y validado en CI** (run 31235032686, ver sección "2026-08-08"). Pendientes reales: pruebas de regresión (`bat`/`which`/`zig`), limpiar el debug de los parches 007–009 y actualizar `docs/build-system-internals.md` con los hallazgos de rust/`setup_rust`.
