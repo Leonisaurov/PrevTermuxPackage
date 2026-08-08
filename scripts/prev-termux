@@ -588,6 +588,155 @@ cmd_subinstall() {
 }
 
 
+# ─── Command: fetch ──────────────────────────────────────────────────────────────
+# Usage: prev-termux fetch <package> [version] [--arch <arch>] [--subversioned] [--out <dir>]
+#
+# Descarga del PrevTermux Store (pool de GitHub Releases prev-termux-pool-<arch>,
+# indexado por manifest.json) el .deb de una versión — y el .pkg.tar.xz si el
+# paquete es objetivo (entrada con campo pkg_tar en el manifest).
+# Sin versión: descarga la única disponible; si hay varias, las lista.
+# --arch          arquitectura del pool (default: aarch64; fallback arch=all)
+# --subversioned  busca el artifact subversioned (mode=subversioned)
+# --out           directorio de descarga (default: ./output)
+#
+cmd_fetch() {
+    local pkg="" ver="" arch="aarch64" mode="normal" out_dir="${PWD}/output"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --arch)
+                [[ -z "${2:-}" ]] && die "--arch requires a value"
+                arch="$2"; shift 2
+                ;;
+            --arch=*) arch="${1#*=}"; shift ;;
+            --subversioned) mode="subversioned"; shift ;;
+            --out)
+                [[ -z "${2:-}" ]] && die "--out requires a value"
+                out_dir="$2"; shift 2
+                ;;
+            --out=*) out_dir="${1#*=}"; shift ;;
+            -*)
+                die "Unknown argument: $1"
+                ;;
+            *)
+                if [[ -z "$pkg" ]]; then
+                    pkg="$1"
+                elif [[ -z "$ver" ]]; then
+                    ver="$1"
+                else
+                    die "Unknown argument: $1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    [[ -z "$pkg" ]] && die "Usage: prev-termux fetch <package> [version] [--arch <arch>] [--subversioned] [--out <dir>]"
+
+    local pool_tag="prev-termux-pool-${arch}"
+    info "Consultando pool '${pool_tag}' del repo ${RELEASE_REPO} (mode=${mode})..."
+
+    # ── 1. Manifest del pool ──
+    local tmpdir
+    tmpdir="$(mktemp -d "${TMPDIR}/prev-termux-fetch.XXXXXX")"
+    if ! gh release download "$pool_tag" -R "$RELEASE_REPO" \
+            --pattern manifest.json --dir "$tmpdir" >/dev/null 2>&1; then
+        rm -rf "$tmpdir"
+        die "Pool '${pool_tag}' no existe o no responde. Verifica: gh release view ${pool_tag} -R ${RELEASE_REPO}"
+    fi
+    local manifest_file="$tmpdir/manifest.json"
+    if [[ ! -s "$manifest_file" ]]; then
+        rm -rf "$tmpdir"
+        die "Pool '${pool_tag}' no contiene un manifest.json"
+    fi
+
+    # ── 2. Buscar entradas (pkg + mode; fallback arch=all para deps
+    #       platform-independent, igual que store-lib.sh) ──
+    local entries
+    entries="$(jq -c --arg pkg "$pkg" --arg mode "$mode" \
+        '[.entries[] | select(.pkg==$pkg and .mode==$mode)]' "$manifest_file" 2>/dev/null || true)"
+    if [[ "$(printf '%s' "$entries" | jq 'length' 2>/dev/null || echo 0)" == "0" && "$arch" != "all" ]]; then
+        entries="$(jq -c --arg pkg "$pkg" --arg mode "$mode" \
+            '[.entries[] | select(.pkg==$pkg and .arch=="all" and .mode==$mode)]' "$manifest_file" 2>/dev/null || true)"
+    fi
+    if [[ "$(printf '%s' "$entries" | jq 'length' 2>/dev/null || echo 0)" == "0" ]]; then
+        rm -rf "$tmpdir"
+        die "No hay entradas para '${pkg}' (mode=${mode}) en el pool '${pool_tag}'. Prueba --subversioned o --arch."
+    fi
+
+    # ── 3. Seleccionar entrada ──
+    local entry=""
+    if [[ -z "$ver" ]]; then
+        local count
+        count="$(printf '%s' "$entries" | jq 'length')"
+        if [[ "$count" -gt 1 ]]; then
+            info "Varias versiones de '${pkg}' disponibles en el pool (mode=${mode}):"
+            printf '%s\n' "$entries" | jq -r '.[] | "  " + .ver + "  " + .asset'
+            rm -rf "$tmpdir"
+            die "Especifica la versión: prev-termux fetch ${pkg} <version> [--arch ${arch}]"
+        fi
+        entry="$(printf '%s' "$entries" | jq -c '.[0]')"
+    else
+        entry="$(printf '%s' "$entries" | jq -c --arg v "$ver" '.[] | select(.ver==$v)' 2>/dev/null | head -n 1 || true)"
+        if [[ -z "$entry" ]]; then
+            local available
+            available="$(printf '%s' "$entries" | jq -r '.[].ver' | paste -sd, - 2>/dev/null)"
+            rm -rf "$tmpdir"
+            die "Versión '${ver}' de '${pkg}' no encontrada en '${pool_tag}' (mode=${mode}). Disponibles: ${available}"
+        fi
+    fi
+
+    local asset sha256 ver_disp
+    asset="$(printf '%s' "$entry" | jq -r '.asset // ""')"
+    sha256="$(printf '%s' "$entry" | jq -r '.sha256 // ""')"
+    ver_disp="$(printf '%s' "$entry" | jq -r '.ver // ""')"
+    if [[ -z "$asset" || -z "$sha256" ]]; then
+        rm -rf "$tmpdir"
+        die "Entrada inválida en el manifest del pool: ${entry}"
+    fi
+
+    # ── 4. Descargar .deb + verificar sha256 ──
+    mkdir -p "$out_dir"
+    info "Descargando ${asset} (${pkg} ${ver_disp}, mode=${mode}) a ${out_dir}/..."
+    if ! gh release download "$pool_tag" -R "$RELEASE_REPO" \
+            --pattern "$asset" --dir "$out_dir" --clobber >/dev/null 2>&1; then
+        rm -rf "$tmpdir"
+        die "Fallo al descargar ${asset} del pool '${pool_tag}'"
+    fi
+    local got
+    got="$(sha256sum "$out_dir/$asset" | cut -d' ' -f1)"
+    if [[ "$got" != "$sha256" ]]; then
+        rm -f "$out_dir/$asset"
+        rm -rf "$tmpdir"
+        die "Checksum erróneo para ${asset}: esperado ${sha256}, obtenido ${got}"
+    fi
+    ok "Descargado y verificado: ${out_dir}/${asset}"
+
+    # ── 5. .pkg.tar.xz si es paquete objetivo (campo pkg_tar) ──
+    local pkg_tar pkg_tar_sha
+    pkg_tar="$(printf '%s' "$entry" | jq -r '.pkg_tar // ""')"
+    pkg_tar_sha="$(printf '%s' "$entry" | jq -r '.pkg_tar_sha256 // ""')"
+    if [[ -n "$pkg_tar" && -n "$pkg_tar_sha" ]]; then
+        info "Paquete objetivo — descargando ${pkg_tar}..."
+        if ! gh release download "$pool_tag" -R "$RELEASE_REPO" \
+                --pattern "$pkg_tar" --dir "$out_dir" --clobber >/dev/null 2>&1; then
+            rm -rf "$tmpdir"
+            die "Fallo al descargar ${pkg_tar} del pool '${pool_tag}'"
+        fi
+        got="$(sha256sum "$out_dir/$pkg_tar" | cut -d' ' -f1)"
+        if [[ "$got" != "$pkg_tar_sha" ]]; then
+            rm -f "$out_dir/$pkg_tar"
+            rm -rf "$tmpdir"
+            die "Checksum erróneo para ${pkg_tar}: esperado ${pkg_tar_sha}, obtenido ${got}"
+        fi
+        ok "Descargado y verificado: ${out_dir}/${pkg_tar}"
+        echo ""
+        info "Instala con: prev-termux subinstall ${out_dir}/${pkg_tar}"
+    fi
+
+    rm -rf "$tmpdir"
+}
+
 # ─── Command: status ─────────────────────────────────────────────────────────────
 # Usage: prev-termux status [<package>]
 #
@@ -724,6 +873,15 @@ ${BOLD}Commands:${NC}
                       built with prefix ~/.local/opt/<pkg>-<ver>/.
                       Also accepted (no effect) by 'list'.
 
+  fetch <package> [version] [--arch <arch>] [--subversioned] [--out <dir>]
+      Download from the PrevTermux Store pool (GitHub Release
+      prev-termux-pool-<arch> + manifest.json). Downloads the .deb, and the
+      .pkg.tar.xz too for target packages (entry with pkg_tar).
+      Without version: downloads it if only one is available, else lists them.
+      --arch <arch>   Pool architecture (default: aarch64)
+      --subversioned  Fetch the subversioned artifact (mode=subversioned)
+      --out <dir>     Download directory (default: ./output)
+
   subinstall [<package>|<file.pkg.tar.xz>]
       Extract a .pkg.tar.xz to ~/.local/opt/<pkg>-<version>/
       Auto-detects the tar layout: subversioned
@@ -759,6 +917,9 @@ ${BOLD}Examples:${NC}
   prev-termux build libfoo --commit a1b2c3d --subversioned
   prev-termux subinstall
   prev-termux subinstall ./output/bat-0.24.0-0-aarch64.pkg.tar.xz
+  prev-termux fetch ncurses
+  prev-termux fetch ncurses 6.1.20180707 --arch aarch64
+  prev-termux fetch bash 5.1.16 --subversioned --out /sdcard/Download
   prev-termux cache info
   prev-termux cache clear
   prev-termux cache clear python
@@ -824,6 +985,10 @@ main() {
         build)
             [[ $# -lt 1 ]] && die "Usage: prev-termux build <package> [--commit <sha>] [--refresh] [--heavy] [--subversioned]"
             cmd_build "$@"
+            ;;
+        fetch)
+            [[ $# -lt 1 ]] && die "Usage: prev-termux fetch <package> [version] [--arch <arch>] [--subversioned] [--out <dir>]"
+            cmd_fetch "$@"
             ;;
         subinstall)
             [[ $# -gt 1 ]] && die "Usage: prev-termux subinstall [<package>|<file.pkg.tar.xz>]"

@@ -41,6 +41,14 @@ on:
         options:
           - fast
           - full
+      use_store:
+        description: "Usa el PrevTermux Store (pool de releases) para reutilizar deps ya compiladas"
+        required: false
+        default: true
+        type: choice
+        options:
+          - "true"
+          - "false"
       heavy:
         description: "Optimize for heavy builds: ZRAM 16GB + free disk space"
         required: false
@@ -195,7 +203,25 @@ jobs:
           echo "package_version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Extracted version: ${VERSION}"
 
-      # ── 3. Preparar build system (sparse fetch de master + parches) ──
+      # ── 2b. Restaurar caché del PrevTermux Store ──
+      # Reutiliza .store-cache (markers del build system + .debs de deps ya
+      # resueltas) y los artifacts de builds previos del MISMO modo. La clave
+      # incluye mode (normal|subversioned) porque markers y .debs difieren
+      # entre modos (prefix versionado), además de build_mode y el REVISION
+      # del build system vendered.
+      - name: Restore store cache
+        if: ${{ inputs.use_store == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            termux-packages/output/*.deb
+            termux-packages/output/*.pkg.tar.xz
+            termux-packages/.store-cache
+          key: prevstore-normal-${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${{ inputs.architecture }}-${{ inputs.build_mode }}-${{ hashFiles('build-system/REVISION') }}
+          restore-keys: |
+            prevstore-normal-${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${{ inputs.architecture }}-
+
+      # ── 3. Preparar build system (build system vendered + normalización legacy) ──
       - name: Prepare build system
         shell: bash
         run: |
@@ -223,7 +249,21 @@ jobs:
             --arch ${{ inputs.architecture }} \
             --format ${{ inputs.format }} \
             --build-mode ${{ inputs.build_mode }} \
+            --store ${{ inputs.use_store }} \
             --workdir "$PWD/termux-packages"
+
+      # ── 5b. Guardar caché del PrevTermux Store ──
+      # Persiste .store-cache y los artifacts del build para el próximo run
+      # del mismo modo (clave idéntica a la del restore).
+      - name: Save store cache
+        if: ${{ success() && inputs.use_store == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            termux-packages/output/*.deb
+            termux-packages/output/*.pkg.tar.xz
+            termux-packages/.store-cache
+          key: prevstore-normal-${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${{ inputs.architecture }}-${{ inputs.build_mode }}-${{ hashFiles('build-system/REVISION') }}
 
       # ── 6. Subir artifact (ambos formatos) ──
       # Antes de crear release, por si algo falla. Sube los .deb originales
@@ -292,12 +332,31 @@ jobs:
             fi
           fi
 
+      # ── 9. Publicar al pool del PrevTermux Store (modo normal) ──
+      # Sube deps (.deb canónico) y el paquete objetivo (.deb + .pkg.tar.xz)
+      # al GitHub Release prev-termux-pool-<arch> con su manifest.json
+      # (scripts/store-publish.sh; merge idempotente por clave pkg|ver|arch|mode).
+      - name: Publish to store pool
+        if: ${{ inputs.use_store == 'true' && success() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/store-publish.sh \
+            "$PWD/termux-packages" \
+            "${{ inputs.architecture }}" \
+            normal \
+            "${{ inputs.package_name }}" \
+            "${{ steps.get_version.outputs.package_version }}" \
+            --src-git-ref "${{ inputs.git_ref }}"
+
   # ════════════════════════════════════════════════════════════════════════
   # Job 2: build-subversioned — build con PREFIX versionado
   # (~/.local/opt/<pkg>-<ver>) + release propio "-subversioned".
-  # Independiente de build-normal (sin `needs`): no se bloquean entre sí.
-  # ════════════════════════════════════════════════════════════════════════
+  # Serializado con `needs: build-normal`: ambos jobs publican al MISMO pool
+  # prev-termux-pool-<arch> (read-modify-write del manifest); build-normal
+  # publica primero y subversioned hace merge sobre el manifest ya actualizado.
   build-subversioned:
+    needs: build-normal
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -437,7 +496,25 @@ jobs:
           echo "package_version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Extracted version: ${VERSION}"
 
-      # ── 3. Preparar build system (sparse fetch de master + parches) ──
+      # ── 2b. Restaurar caché del PrevTermux Store ──
+      # Reutiliza .store-cache (markers del build system + .debs de deps ya
+      # resueltas) y los artifacts de builds previos del MISMO modo. La clave
+      # incluye mode (normal|subversioned) porque markers y .debs difieren
+      # entre modos (prefix versionado), además de build_mode y el REVISION
+      # del build system vendered.
+      - name: Restore store cache
+        if: ${{ inputs.use_store == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            termux-packages/output/*.deb
+            termux-packages/output/*.pkg.tar.xz
+            termux-packages/.store-cache
+          key: prevstore-subversioned-${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${{ inputs.architecture }}-${{ inputs.build_mode }}-${{ hashFiles('build-system/REVISION') }}
+          restore-keys: |
+            prevstore-subversioned-${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${{ inputs.architecture }}-
+
+      # ── 3. Preparar build system (build system vendered + normalización legacy) ──
       - name: Prepare build system
         shell: bash
         run: |
@@ -469,8 +546,22 @@ jobs:
             --arch ${{ inputs.architecture }} \
             --format ${{ inputs.format }} \
             --build-mode ${{ inputs.build_mode }} \
+            --store ${{ inputs.use_store }} \
             --subversioned \
             --workdir "$PWD/termux-packages"
+
+      # ── 5b. Guardar caché del PrevTermux Store ──
+      # Persiste .store-cache y los artifacts del build para el próximo run
+      # del mismo modo (clave idéntica a la del restore).
+      - name: Save store cache
+        if: ${{ success() && inputs.use_store == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            termux-packages/output/*.deb
+            termux-packages/output/*.pkg.tar.xz
+            termux-packages/.store-cache
+          key: prevstore-subversioned-${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${{ inputs.architecture }}-${{ inputs.build_mode }}-${{ hashFiles('build-system/REVISION') }}
 
       # ── 6. Subir artifact (ambos formatos, sufijo -subversioned) ──
       # Sube los .deb originales Y los .pkg.tar.xz convertidos por deb2pkg.sh.
@@ -543,3 +634,20 @@ jobs:
                 --notes "$NOTES"
             fi
           fi
+
+      # ── 9. Publicar al pool del PrevTermux Store (modo subversioned) ──
+      # Sube deps (.deb canónico con sufijo _subversioned) y el paquete
+      # objetivo (.deb + .pkg.tar.xz) al GitHub Release prev-termux-pool-<arch>
+      # con su manifest.json (scripts/store-publish.sh; merge idempotente).
+      - name: Publish to store pool (subversioned)
+        if: ${{ inputs.use_store == 'true' && success() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/store-publish.sh \
+            "$PWD/termux-packages" \
+            "${{ inputs.architecture }}" \
+            subversioned \
+            "${{ inputs.package_name }}" \
+            "${{ steps.get_version.outputs.package_version }}" \
+            --src-git-ref "${{ inputs.git_ref }}"
