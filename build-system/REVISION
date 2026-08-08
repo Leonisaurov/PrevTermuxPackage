@@ -1,0 +1,4 @@
+UPSTREAM_SHA=de5ca479b62d2b9b9435eabaa91618dba9c32fb4
+UPSTREAM_URL=https://github.com/termux/termux-packages
+IMPORT_DATE=2026-08-08
+NOTES=Import con 16 implementaciones + blindaje LLVM + 2 de PrevTermux Store (fase B + fase 1 del Store completadas). Detalle en FORK.md; archivos modificados en .fork-files.

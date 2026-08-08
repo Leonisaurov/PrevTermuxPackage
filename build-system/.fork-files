@@ -1,0 +1,16 @@
+# Archivos del fork de PrevTermuxPackage que llevan implementaciones de
+# compatibilidad legacy (marcadas con "# Legacy compatibility:").
+# Un archivo por línea. Al actualizar contra un nuevo upstream SHA, cualquier
+# conflicto sobre estos archivos debe ABORTAR y re-portarse a mano.
+scripts/buildorder.py
+scripts/build/termux_extract_dep_info.sh
+scripts/build/termux_step_setup_variables.sh
+scripts/build/termux_step_get_dependencies.sh
+scripts/build/termux_step_make_install.sh
+scripts/build/termux_step_install_license.sh
+scripts/build/termux_step_patch_package.sh
+scripts/build/termux_step_start_build.sh
+scripts/build/setup/termux_setup_rust.sh
+scripts/build/toolchain/termux_setup_toolchain_23c.sh
+scripts/build/toolchain/termux_setup_toolchain_29.sh
+build-package.sh
