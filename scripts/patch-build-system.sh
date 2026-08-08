@@ -131,9 +131,20 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     # compile, y grep -c gnu89 = 0):
     # 1) Los build-tools HOST (mkbuiltins.c y otros) los compila el Makefile de
     #    bash con la variable CCFLAGS_FOR_BUILD (gcc del host), NO con CFLAGS.
-    #    Se fuerza CCFLAGS_FOR_BUILD=-g -DCROSS_COMPILING -std=gnu89 via
-    #    TERMUX_PKG_EXTRA_MAKE_ARGS (override del default del Makefile). bash
-    #    no la define en e4f2135, asi que no hay duplicacion.
+    #    NOTA (run 31230538553): NO se puede inyectar -std=gnu89 via
+    #    TERMUX_PKG_EXTRA_MAKE_ARGS: el build system la expande SIN comillas
+    #    (make -j N ${VAR}) y el field splitting de bash divide el valor por
+    #    espacios ("make: invalid option -- 'D'"); los backslashes NO escapan
+    #    el espacio en una expansion sin comillas (verificado con GNU make 4.4.1:
+    #    mismo error con y sin backslash). La solucion es parchear Makefile.in
+    #    (configure lo transforma en Makefile) en pre_configure con
+    #    "sed -i '/ -std=gnu89/! s|^CCFLAGS_FOR_BUILD *=|& -std=gnu89|' Makefile.in":
+    #    anhade -std=gnu89 justo tras "CCFLAGS_FOR_BUILD =" sin tocar el resto
+    #    (conserva -g -DCROSS_COMPILING). pre_configure corre antes de configure
+    #    y con cwd=srcdir, asi que Makefile.in ya existe. La FASE 1 tambien
+    #    borra la linea TERMUX_PKG_EXTRA_MAKE_ARGS="CCFLAGS_FOR_BUILD=..." por
+    #    si una version anterior de este script la dejo (make la re-dividiria y
+    #    fallaria con el mismo error).
     # 2) El cross-compile usa CFLAGS, pero la definicion a top-level del
     #    build.sh se evalua al sourcear (antes del setup del toolchain) y es
     #    sobrescrita despues; por eso se exporta DENTRO de
@@ -147,9 +158,8 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     #    L26 blank, L27 "termux_step_pre_configure () {", L28 tab +
     #    "declare -A PATCH_CHECKSUMS" (INMEDIATA: solo indentacion tab entre
     #    ambas, sin blank lines ni comentarios; el [[:space:]]* del guard la
-    #    tolera). La linea tras la ancla de EXTRA_MAKE_ARGS (L26) es una blank
-    #    line, no una variable legacy. bash NO define TERMUX_PKG_EXTRA_MAKE_ARGS
-    #    ni CCFLAGS_FOR_BUILD en ningun punto (git grep, e4f2135).
+    #    tolera). bash NO define TERMUX_PKG_EXTRA_MAKE_ARGS ni CCFLAGS_FOR_BUILD
+    #    en ningun punto (git grep, e4f2135).
     # El bloque se ejecuta en DOS seds: FASE 1 = normalizacion global (s///
     # linea a linea, sin N; toda linea pasa por todas las reglas), FASE 2 =
     # inserciones con lookahead (N + guard + P/D). Asi, la linea que queda
@@ -170,18 +180,15 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
         -e 's|https://fossies\.org/linux/misc/rxvt-unicode-\${TERMUX_PKG_VERSION\[1\]}\.tar\.bz2|https://deb.debian.org/debian/pool/main/r/rxvt-unicode/rxvt-unicode_${TERMUX_PKG_VERSION[1]}.orig.tar.bz2|g' \
         -e 's|--with-pkg-config-libdir=\$PKG_CONFIG_LIBDIR|--with-pkg-config-libdir=\$TERMUX_PREFIX/lib/pkgconfig|' \
         -e '/^TERMUX_PKG_DEPENDS="termux-am"$/d' \
+        -e '/^TERMUX_PKG_EXTRA_MAKE_ARGS="CCFLAGS_FOR_BUILD=/d' \
         "$f"
     # FASE 2: inserciones con lookahead (N + guard + P/D).
     sed -i \
         -e '/^termux_step_pre_configure () {$/{
 N
-/^termux_step_pre_configure () {\n[[:space:]]*declare -A PATCH_CHECKSUMS/s/^termux_step_pre_configure () {\n/termux_step_pre_configure () {\nexport CFLAGS="$CFLAGS -std=gnu89"\n/
+/^termux_step_pre_configure () {\n[[:space:]]*declare -A PATCH_CHECKSUMS/s@^termux_step_pre_configure () {\n@termux_step_pre_configure () {\nexport CFLAGS="$CFLAGS -std=gnu89"\nsed -i "/ -std=gnu89/! s|^CCFLAGS_FOR_BUILD *=|\& -std=gnu89|" Makefile.in\n@
 P
 D
-}' \
-        -e '/^TERMUX_PKG_RM_AFTER_INSTALL="share\/man\/man1\/bashbug\.1 bin\/bashbug"$/{
-N
-/^TERMUX_PKG_RM_AFTER_INSTALL="share\/man\/man1\/bashbug\.1 bin\/bashbug"\nTERMUX_PKG_EXTRA_MAKE_ARGS="CCFLAGS_FOR_BUILD=-g -DCROSS_COMPILING -std=gnu89"$/!s|^TERMUX_PKG_RM_AFTER_INSTALL="share/man/man1/bashbug\.1 bin\/bashbug"\n|TERMUX_PKG_RM_AFTER_INSTALL="share/man/man1/bashbug\.1 bin\/bashbug"\nTERMUX_PKG_EXTRA_MAKE_ARGS="CCFLAGS_FOR_BUILD=-g -DCROSS_COMPILING -std=gnu89"\n|
 }' \
         "$f"
 done || true
