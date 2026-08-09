@@ -56,6 +56,27 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     # exacta, sin lista), por eso la regla borra la linea anclada; es
     # idempotente: tras la primera pasada el patron ya no esta presente y sed
     # no toca nada mas.
+    # Legacy compatibility: en termux-tools@8ca9404 (2023) termux-am NO es dep
+    # unica sino un TOKEN dentro de una lista larga de DEPENDS
+    # (TERMUX_PKG_DEPENDS="bzip2, coreutils, ..., termux-am (>= 0.8.0),
+    # termux-am-socket (>= 1.5.0), termux-core, ..."), por lo que la regla de
+    # linea anclada de arriba no matchea y buildorder intenta compilar termux-am
+    # (Gradle 4.1 + Java 17 del runner: run CI 31296447772 de bash@8ca9404).
+    # Estas reglas eliminan SOLO los tokens con version "termux-am (>= ...), "
+    # y "termux-am-socket (>= ...), " dentro de listas. Son idempotentes (tras
+    # la 1a pasada el token ya no esta presente) y seguras: el patron requiere
+    # espacio literal tras "termux-am" (no colisiona con "termux-am-socket")
+    # y el "(>= " solo aparece en DEPENDS. NO tocan el caso de dep unica.
+    # Legacy compatibility: en termux-api@8ca9404 (2023) termux-am es el token
+    # FINAL de la lista SIN coma trailing
+    # (TERMUX_PKG_DEPENDS="bash, util-linux, termux-am (>= 0.8.0)"): los patrones
+    # "..., " de arriba no lo matchean, asi que el token quedaba en la lista y
+    # buildorder intentaria compilar termux-am. Esta regla elimina el token final
+    # anclado al fin de linea; como el ultimo token de la lista va seguido de la
+    # comilla de cierre de la variable, el patron captura y RESTAURA esa comilla:
+    # s/, termux-am ([^)]*)"$/"/  ->  deja TERMUX_PKG_DEPENDS="bash, util-linux"
+    # (sintaxis valida). Es idempotente y no colisiona con termux-tools (donde el
+    # token va seguido de ", termux-core" y el ancla $ no matchea).
     # Legacy compatibility: bash 4.4.23 (commit e4f2135, 2018) se compila con
     # prototipos C estilo K&R (void line_error(); static char *xmalloc();). El
     # compilador moderno (C23/clang nuevo) interpreta "()" como "(void)" y el
@@ -138,6 +159,9 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
         -e 's|1c9f09c119c5b24bd1934ce515e70f402b7d1b2c55f8218a16eddaa26e3f6fb0|2ac8ac8fb7646ac8d370dfc26bda2831ee951b4608d8783e9ec385a1b0ca3ff0|g' \
         -e 's|--with-pkg-config-libdir=\$PKG_CONFIG_LIBDIR|--with-pkg-config-libdir=\$TERMUX_PREFIX/lib/pkgconfig|' \
         -e '/^TERMUX_PKG_DEPENDS="termux-am"$/d' \
+        -e 's/termux-am-socket ([^)]*), //g' \
+        -e 's/termux-am ([^)]*), //g' \
+        -e 's/, termux-am ([^)]*)"$/"/' \
         -e '/^TERMUX_PKG_EXTRA_MAKE_ARGS="CCFLAGS_FOR_BUILD=/d' \
         "$f" || true
     # FASE 2: inserciones con lookahead (N + guard + P/D).
