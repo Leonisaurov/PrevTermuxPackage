@@ -209,6 +209,41 @@ P
 D
 }' \
         "$f" || true
+
+    # FASE 2c: util-linux 2.40.2 (commit 8ca9404, 2023) — fix remake espurio de
+    # src/Makefile.in. Run CI 31299802531 fallo en make de util-linux con
+    # "configure.ac:14: error: version mismatch. This is Automake 1.18.1, but the
+    # definition used by this AM_INIT_AUTOMAKE comes from Automake 1.16.5."
+    # (exit 63). El shim de automake (commit a750096) evito el "command not
+    # found" pero el remake espurio de src/Makefile.in (disparado por la regla
+    # automatica de automake via config/missing tras quedar src/Makefile.am con
+    # mtime mas reciente que src/Makefile.in por el patch del paquete) invoca
+    # automake-1.16 mientras el runner trae automake 1.18.1: mismatch de version.
+    # Igual que tar (FASE 2b), se inyecta "autoreconf -fi" como 1a linea de
+    # termux_step_pre_configure: regenera aclocal.m4, configure y TODA la
+    # jerarquia de Makefile.in con el automake del sistema, eliminando el
+    # mismatch y el remake espurio (tar PASO con este fix, run CI 31296109277).
+    # pre_configure corre con cwd=$TERMUX_PKG_SRCDIR despues de
+    # termux_step_patch_package y antes de configure (build-package.sh:866-867).
+    # Guard de 3 lineas (apertura + case $TERMUX_ARCH_BITS + comentario prlimit)
+    # unico de util-linux: git grep en 8ca9404 confirma que
+    # 'case "$TERMUX_ARCH_BITS" in' y '#prlimit() is only available in 64-bit
+    # bionic.' solo existen en packages/util-linux/build.sh (lineas 62-63). No
+    # colisiona con el guard de tar (CPPFLAGS FORTIFY + LDFLAGS landroid-glob) ni
+    # con el de bash (declare -A PATCH_CHECKSUMS): cada sed ancla en su paquete.
+    # Idempotente: tras la 1a pasada la linea 2 ya es "autoreconf -fi" y el guard
+    # deja de matchear en una 2a pasada.
+    sed -i \
+        -e '/^termux_step_pre_configure() {$/{
+N
+/^termux_step_pre_configure() {\n[[:space:]]*case "\$TERMUX_ARCH_BITS" in/{
+N
+/^termux_step_pre_configure() {\n[[:space:]]*case "\$TERMUX_ARCH_BITS" in\n[[:space:]]*#prlimit() is only available in 64-bit bionic\./s@^termux_step_pre_configure() {\n@termux_step_pre_configure() {\nautoreconf -fi\n@
+}
+P
+D
+}' \
+        "$f" || true
 done || true
 
 echo "=== [normalize-legacy-builds] Done. build.sh normalizados. ==="
