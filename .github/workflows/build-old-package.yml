@@ -370,7 +370,7 @@ jobs:
   # corre igual gracias a `needs.build-normal.result == 'skipped'`.
   build-subversioned:
     needs: build-normal
-    if: ${{ (inputs.jobs == 'both' || inputs.jobs == 'subversioned') && (needs.build-normal.result == 'success' || needs.build-normal.result == 'skipped') }}
+    if: ${{ (inputs.jobs == 'both' || inputs.jobs == 'subversioned') && (success() || needs.build-normal.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
