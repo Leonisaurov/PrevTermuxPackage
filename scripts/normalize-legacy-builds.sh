@@ -112,6 +112,17 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     # normalizada (=true) en la FASE 1 antes de que la FASE 2 la consuma con N.
     # Ambas fases son idempotentes (N + guard de lookahead): tras la 1a pasada
     # la linea ya esta presente y el guard deja de matchear en una 2a pasada.
+    # Legacy compatibility: codeberg REGENERO el empaquetado gzip de los
+    # archives de foot 1.25.0 y 1.22.3 (mismo commit del tag; contenido del
+    # source byte-identico verificado con diff -rq contra Wayback Machine), por
+    # lo que el SHA256 historico del build.sh ya no coincide con el que codeberg
+    # sirve hoy. Se actualiza el checksum al valor actual (RECOMPUTADO, como el
+    # de ncurses-snapshots), verificado por doble descarga. Sin cambio de URL: el
+    # archive de codeberg sigue vivo y es determinista. Bloquea la cadena de
+    # regresiones via ncurses (terminfo de foot): bat@2f2adec (foot 1.25.0, run
+    # CI "Wrong checksum ... 442a42d5") y bash@8ca9404 (foot 1.22.3, run CI
+    # 31291105922 "Wrong checksum ... 1c9f09c1"). Idempotente: el sed no toca
+    # nada si el SHA historico ya no esta presente.
     # FASE 1: normalizacion global linea a linea.
     sed -i \
         -e 's/TERMUX_PKG_BLACKLISTED_ARCHES=/TERMUX_PKG_EXCLUDED_ARCHES=/g' \
@@ -123,6 +134,8 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
         -e 's|https://dl\.bintray\.com/termux/upstream/ncurses-\${TERMUX_PKG_VERSION:0:3}-\${TERMUX_PKG_VERSION:4}\.tgz|https://github.com/ThomasDickey/ncurses-snapshots/archive/b69347e952d596f8a3799b11a28080f8fd716511.tar.gz|g' \
         -e 's|78c92a14f3640582dcc69ea90b2043d6f08327be5ee1ad4c98ee7135565e5dfa|d6e9758d3b51dbaa582b1cdf6a2749e29bc6b03638b05be8b974a0cdb6fdf019|g' \
         -e 's|https://fossies\.org/linux/misc/rxvt-unicode-\${TERMUX_PKG_VERSION\[1\]}\.tar\.bz2|https://deb.debian.org/debian/pool/main/r/rxvt-unicode/rxvt-unicode_${TERMUX_PKG_VERSION[1]}.orig.tar.bz2|g' \
+        -e 's|442a42d576ec72dd50f2d3faea8a664230a47bac79dc1eb6e7c9125ee76c130f|ee9d0e51295945157ecb33119cb2c79b276093d0fd342d959d78d772d505571c|g' \
+        -e 's|1c9f09c119c5b24bd1934ce515e70f402b7d1b2c55f8218a16eddaa26e3f6fb0|2ac8ac8fb7646ac8d370dfc26bda2831ee951b4608d8783e9ec385a1b0ca3ff0|g' \
         -e 's|--with-pkg-config-libdir=\$PKG_CONFIG_LIBDIR|--with-pkg-config-libdir=\$TERMUX_PREFIX/lib/pkgconfig|' \
         -e '/^TERMUX_PKG_DEPENDS="termux-am"$/d' \
         -e '/^TERMUX_PKG_EXTRA_MAKE_ARGS="CCFLAGS_FOR_BUILD=/d' \
