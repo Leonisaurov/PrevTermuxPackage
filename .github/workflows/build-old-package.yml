@@ -54,16 +54,26 @@ on:
         required: false
         default: false
         type: boolean
+      jobs:
+        description: 'Jobs to run: both, normal (build-normal only) or subversioned (build-subversioned only)'
+        type: choice
+        required: false
+        default: both
+        options:
+          - both
+          - normal
+          - subversioned
 
 jobs:
   # ════════════════════════════════════════════════════════════════════════
   # Job 1: build-normal — build clásico (sin prefix versionado)
   # ════════════════════════════════════════════════════════════════════════
   build-normal:
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ inputs.jobs == 'both' || inputs.jobs == 'normal' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    timeout-minutes: 600
     outputs:
       package_version: ${{ steps.get_version.outputs.package_version }}
       release_tag: ${{ steps.generate_tag.outputs.release_tag }}
@@ -352,15 +362,19 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════
   # Job 2: build-subversioned — build con PREFIX versionado
   # (~/.local/opt/<pkg>-<ver>) + release propio "-subversioned".
+  # La selección de jobs se hace con el input `jobs`: both|normal|subversioned.
   # Serializado con `needs: build-normal`: ambos jobs publican al MISMO pool
   # prev-termux-pool-<arch> (read-modify-write del manifest); build-normal
   # publica primero y subversioned hace merge sobre el manifest ya actualizado.
+  # En modo `subversioned` el job build-normal se salta (if false) y este job
+  # corre igual gracias a `needs.build-normal.result == 'skipped'`.
   build-subversioned:
     needs: build-normal
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ (inputs.jobs == 'both' || inputs.jobs == 'subversioned') && (needs.build-normal.result == 'success' || needs.build-normal.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    timeout-minutes: 600
     outputs:
       package_version: ${{ steps.get_version.outputs.package_version }}
       release_tag: ${{ steps.generate_tag.outputs.release_tag }}
