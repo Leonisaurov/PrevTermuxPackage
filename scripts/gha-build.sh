@@ -208,6 +208,14 @@ if [ "$STORE" = "on" ]; then
     # y store/ (manifest + debs descargados del pool), que actions/cache
     # (fase 2) puede persistir entre runs.
     mkdir -p "$WORKDIR/.store-cache/.built-packages" "$WORKDIR/.store-cache/store"
+    # Los dirs los crea el runner del HOST antes de montar el árbol en el
+    # contenedor (bind mount), donde el build corre como el usuario `builder`.
+    # Con 755 del host el contenedor no podría escribir el marker final
+    # (termux_step_finish_build.sh → Permission denied). Además del allow rule
+    # de AppArmor (build-system/scripts/profile-restricted.apparmor), se abre
+    # 0777 como defensa en profundidad: independiente del uid real de `builder`
+    # y de la propiedad que pueda traer actions/cache al restaurar el dir.
+    chmod -R 0777 "$WORKDIR/.store-cache"
     TERMUX_BUILT_PACKAGES_DIRECTORY="/home/builder/termux-packages/.store-cache/.built-packages"
     TERMUX_STORE_DIR="/home/builder/termux-packages/.store-cache/store"
     # bs_rev del build system vendered (build-system/REVISION): store-lib.sh lo

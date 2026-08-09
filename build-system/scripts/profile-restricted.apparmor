@@ -53,10 +53,16 @@ profile _custom-termux-package-builder-{{CONTAINER_NAME}} flags=(attach_disconne
 	deny capability setuid,
 	deny capability setgid,
 
-	# Do not allow the container to modify trusted scripts
-	deny /home/builder/termux-packages/[^o]** wlk,
+	# Do not allow the container to modify trusted scripts.
+	# [^o.] excluye también los dirs con punto inicial (p.ej. .store-cache):
+	# el PrevTermux Store escribe ahí markers del build system y .debs del pool
+	# desde el contenedor (termux_step_finish_build.sh → Permission denied si
+	# AppArmor bloquea la escritura).
+	deny /home/builder/termux-packages/[^o.]** wlk,
 	# Explicitly allow storing built debs
 	allow /home/builder/termux-packages/output/** rw,
+	# Allow PrevTermux Store cache (markers del build system + .debs del pool)
+	allow /home/builder/termux-packages/.store-cache/** rw,
 
   # Do not allow the container to modify the build toolchain
 	deny /home/builder/lib/** wlk,
