@@ -163,6 +163,34 @@ termux_step_setup_variables() {
 	TERMUX_PKG_RM_AFTER_INSTALL=""
 	TERMUX_PKG_SHA256=""
 	TERMUX_PKG_SRCDIR=$TERMUX_TOPDIR/$TERMUX_PKG_NAME/src
+	# Legacy compatibility: los tarballs historicos (tar 1.35, util-linux
+	# 2.40.2, etc.) traen Makefile.in generados con automake-N.N (p.ej.
+	# automake-1.16) y la regla maintainer-mode del sub-make invoca
+	# "config/missing automake-N.N" durante make. El runner (package-builder,
+	# ubuntu:26.04) instala "automake" base (1.17+, binario no versionado)
+	# pero NO el binario exacto automake-N.N -> "command not found" (exit 127)
+	# en remakes espurios de Makefile.in. Este shim crea symlinks
+	# automake-N.N -> automake (del sistema) para que el remake use la misma
+	# herramienta que master usa hoy (compatible).
+	# Independiente del srcdir: aqui (termux_step_setup_variables) el source
+	# aun no esta extraido, asi que no se puede escanear configure.ac/Makefile.am.
+	# Se cubren las versiones versionadas de automake que aparecen en tarballs
+	# historicos (1.16, 1.15, 1.14, 1.13); coste trivial y cubre paquetes
+	# presentes y futuros sin depender del orden de pasos del build.
+	_TERMUX_AUTOMAKE_SHIM_DIR="$TERMUX_TOPDIR/.prev-termux-bin"
+	if ! grep -q "$_TERMUX_AUTOMAKE_SHIM_DIR" <<< "$PATH" 2>/dev/null; then
+		mkdir -p "$_TERMUX_AUTOMAKE_SHIM_DIR"
+		if command -v automake >/dev/null 2>&1; then
+			_TERMUX_AUTOMAKE_SYSTEM_BIN="$(command -v automake)"
+			for _TERMUX_AUTOMAKE_VER in automake-1.16 automake-1.15 automake-1.14 automake-1.13; do
+				if ! command -v "$_TERMUX_AUTOMAKE_VER" >/dev/null 2>&1; then
+					[ -e "$_TERMUX_AUTOMAKE_SHIM_DIR/$_TERMUX_AUTOMAKE_VER" ] \
+						|| ln -s "$_TERMUX_AUTOMAKE_SYSTEM_BIN" "$_TERMUX_AUTOMAKE_SHIM_DIR/$_TERMUX_AUTOMAKE_VER"
+				fi
+			done
+		fi
+		export PATH="$_TERMUX_AUTOMAKE_SHIM_DIR:$PATH"
+	fi
 	TERMUX_PKG_SUGGESTS=""
 	TERMUX_PKG_TMPDIR=$TERMUX_TOPDIR/$TERMUX_PKG_NAME/tmp
 	TERMUX_PKG_UNDEF_SYMBOLS_FILES="" # maintainer acknowledges these files have undefined symbols will not result in broken packages, eg: all, *.elf, ./path/to/file. "error" to always print results as errors
