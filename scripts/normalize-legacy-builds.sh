@@ -149,6 +149,42 @@ P
 D
 }' \
         "$f" || true
+
+    # FASE 2b: tar 1.35 (commit 8ca9404, 2023) — fix remake espurio de
+    # src/Makefile.in. Run CI 31293810431 fallo en make de tar con
+    # "build-aux/missing: line 81: automake-1.16: command not found" (exit 127).
+    # Causa raiz: el patch packages/tar/fix-linking-to-iconv.patch modifica
+    # src/Makefile.am (anade "$(LIBINTL) $(LIBICONV)" a tar_LDADD); GNU patch lo
+    # deja con mtime mas reciente que src/Makefile.in (generado con automake
+    # 1.16 al empaquetar el tarball), y make dispara la regla automatica de
+    # automake "src/Makefile.in: src/Makefile.am" a traves del wrapper
+    # build-aux/missing. El runner no tiene automake-1.16 (setup-ubuntu.sh
+    # instala el paquete 'automake' de ubuntu:26.04, cuyo binario versionado es
+    # el de la version actual, no 1.16) y missing aborta. Master
+    # (dd35c13e82, packages/tar/build.sh) resuelve lo mismo con
+    # "autoreconf -fi" en termux_step_pre_configure: regenera los Makefile.in
+    # desde los .am YA parcheados con el automake del sistema (la version
+    # codificada pasa a ser la instalada y el remake espurio desaparece; ademas
+    # propaga el cambio del patch al Makefile generado, sin lo cual el link de
+    # tar quedaria sin -liconv). Se replica ese fix en el build.sh historico:
+    # pre_configure corre con cwd=$TERMUX_PKG_SRCDIR despues de
+    # termux_step_patch_package y antes de configure (build-package.sh:866-867).
+    # Guard de 3 lineas (apertura + CPPFLAGS FORTIFY + LDFLAGS landroid-glob)
+    # unico de tar: coreutils y m4 tambien tienen la linea CPPFLAGS
+    # "-D__USE_FORTIFY_LEVEL=0" en pre_configure, pero no con la linea LDFLAGS
+    # landroid-glob consecutiva. Idempotente: tras la 1a pasada la linea 2 ya es
+    # "autoreconf -fi" y el guard deja de matchear en una 2a pasada.
+    sed -i \
+        -e '/^termux_step_pre_configure() {$/{
+N
+/^termux_step_pre_configure() {\n[[:space:]]*CPPFLAGS+=" -D__USE_FORTIFY_LEVEL=0"/{
+N
+/^termux_step_pre_configure() {\n[[:space:]]*CPPFLAGS+=" -D__USE_FORTIFY_LEVEL=0"\n[[:space:]]*LDFLAGS+=" -landroid-glob"/s@^termux_step_pre_configure() {\n@termux_step_pre_configure() {\nautoreconf -fi\n@
+}
+P
+D
+}' \
+        "$f" || true
 done || true
 
 echo "=== [normalize-legacy-builds] Done. build.sh normalizados. ==="
