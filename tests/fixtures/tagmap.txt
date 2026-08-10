@@ -1,0 +1,18 @@
+# Tagmap del stub gh (tests/stubs/gh): TSV "tag\tpkg\tver[\tartifact_override]".
+# La 4ª columna opcional fuerza el NOMBRE del artifact descargado (para simular
+# la colisión de prefijo python vs python-numpy en el test B9).
+zig-0.16.0-def4567-subversioned	zig	0.16.0
+zig-0.16.0-def4567	zig	0.16.0
+zig-0.15.2-abc1234-subversioned	zig	0.15.2
+zig-0.15.2-abc1234	zig	0.15.2
+bat-0.7.1-aaa1111-subversioned	bat	0.7.1
+bat-0.7.1-aaa1111	bat	0.7.1
+coreutils-9.5-ccc2222	coreutils	9.5
+python-3.11.0-aaa1111-subversioned	python	3.11.0	python-numpy-1.26.4-0-aarch64
+python-3.11.0-aaa1111	python	3.11.0
+python-3.11.0-ccc3333-subversioned	python	3.11.0
+python-3.11.0-ccc3333	python	3.11.0
+python-numpy-1.26.4-bbb2222-subversioned	python-numpy	1.26.4
+python-numpy-1.26.4-bbb2222	python-numpy	1.26.4
+libedit-20210216-3.1-abc1234-subversioned	libedit	20210216-3.1
+libedit-20210216-3.1-abc1234	libedit	20210216-3.1

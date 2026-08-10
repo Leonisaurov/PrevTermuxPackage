@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Stub fzf para la suite de tests de scripts/prev-termux.
+# No abre TTY: lee stdin, registra las opciones en FZF_LOG (y las repite por
+# stderr, como el fzf real pinta su UI) y devuelve una elección determinista:
+#   • 1ª línea del archivo $FZF_CHOICES (cola FIFO) si existe y no está vacío
+#   • si no, la línea $FZF_PICK (default 1) de la entrada
+# NOTA: la CLI invoca fzf con 2>/dev/null, así que el mecanismo de aserción de
+# las opciones mostradas es FZF_LOG.
+set -u
+
+LOG="${FZF_LOG:-/dev/null}"
+input="$(cat)"
+[[ -n "$input" ]] && printf '%s\n' "$input" >> "$LOG"
+[[ -n "$input" ]] && printf '%s\n' "$input" >&2
+
+if [[ -n "${FZF_CHOICES:-}" && -s "$FZF_CHOICES" ]]; then
+    first="$(sed -n '1p' "$FZF_CHOICES")"
+    tail -n +2 "$FZF_CHOICES" > "${FZF_CHOICES}.tmp" 2>/dev/null || true
+    mv "${FZF_CHOICES}.tmp" "$FZF_CHOICES" 2>/dev/null || true
+    if [[ -n "$first" ]]; then
+        printf '%s\n' "$first"
+        exit 0
+    fi
+fi
+
+n="${FZF_PICK:-1}"
+printf '%s\n' "$input" | sed -n "${n}p"
+exit 0

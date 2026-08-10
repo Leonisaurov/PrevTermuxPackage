@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# Stub gh para la suite de tests de scripts/prev-termux (tests/run-cli-tests.sh).
+# NO ejecuta nada real contra GitHub: responde JSON/exit codes y registra cada
+# invocación en GH_LOG para poder hacer aserciones.
+#
+# Variables de control (heredadas del runner):
+#   GH_LOG         — archivo de log (se registra cada invocación: "gh <args>")
+#   GH_RELEASES    — path a un JSON de fixtures que responde `gh release list`
+#   GH_RUNS        — path a un JSON de fixtures que responde `gh run list`
+#                    (detección de runs del build); si falta/ausente → '[]'
+#   GH_TAGMAP      — archivo TSV "tag\tpkg\tver[\tartifact_override]"
+#   GH_STAGING_STD — dir raíz del tar fake con layout estándar
+#                    (data/data/com.termux/files/usr/bin/<pkg>)
+#   GH_STAGING_SUB — dir raíz del tar fake con layout subversioned
+#                    (data/data/com.termux/files/home/.local/opt/<pkg>-<ver>/bin/<pkg>)
+#   GH_POOL_PKG/VER/MODE — pkg/ver/mode del manifest.json del pool (fetch)
+#
+# Comandos soportados:
+#   auth status                    → exit 0
+#   repo view --json ... -q ...    → JSON nameWithOwner/defaultBranch (aplica jq si -q/--jq)
+#   release view <tag>             → exit 1 (release no existe)
+#   release list ...               → cat $GH_RELEASES (aplica --jq si viene)
+#   release download <tag> ...     → crea tar fake .pkg.tar.xz o .deb según el tag
+#   workflow enable/run <file> ... → exit 0 (workflow run queda en GH_LOG)
+#   run list ...                   → cat $GH_RUNS (o [{"databaseId":9999}] con --jq)
+set -u
+
+main_stub() {
+    local LOG="${GH_LOG:-/dev/null}"
+    local RELEASES="${GH_RELEASES:-}"
+    local RUNS="${GH_RUNS:-}"
+    local TAGMAP="${GH_TAGMAP:-}"
+    local STAGING_STD="${GH_STAGING_STD:-}"
+    local STAGING_SUB="${GH_STAGING_SUB:-}"
+    local POOL_PKG="${GH_POOL_PKG:-zig}"
+    local POOL_VER="${GH_POOL_VER:-0.16.0}"
+    local POOL_MODE="${GH_POOL_MODE:-normal}"
+
+    printf 'gh %s\n' "$*" >> "$LOG"
+
+    # ── Capturar filtro --jq / -q (gh real aplica jq sobre la respuesta) ──
+    local jq_filter="" prev=""
+    local a
+    for a in "$@"; do
+        if [[ "$prev" == "--jq" || "$prev" == "-q" ]]; then
+            jq_filter="$a"
+        fi
+        prev="$a"
+    done
+
+    emit() {
+        if [[ -n "$jq_filter" ]]; then
+            printf '%s' "$1" | jq -r "$jq_filter" 2>/dev/null || printf '%s' "$1"
+        else
+            printf '%s' "$1"
+        fi
+    }
+
+    # ── Crear tar fake ────────────────────────────────────────────────────────
+    # make_tar <artifact> <layout> <pkg> <ver>
+    # Si el binario de staging existe crea un tar real (para que la extracción
+    # de la CLI funcione); si no, un archivo dummy (solo parseo, sin extracción).
+    make_tar() {
+        local artifact="$1" layout="$2" pkg="$3" ver="$4" src=""
+        if [[ "$layout" == "subversioned" ]]; then
+            src="$STAGING_SUB/data/data/com.termux/files/home/.local/opt/${pkg}-${ver}/bin/${pkg}"
+            if [[ -f "$src" ]]; then
+                tar -cf "$artifact" -C "$STAGING_SUB" \
+                    "data/data/com.termux/files/home/.local/opt/${pkg}-${ver}/bin/${pkg}"
+            else
+                printf 'dummy\n' > "$artifact"
+            fi
+        else
+            src="$STAGING_STD/data/data/com.termux/files/usr/bin/${pkg}"
+            if [[ -f "$src" ]]; then
+                tar -cf "$artifact" -C "$STAGING_STD" \
+                    "data/data/com.termux/files/usr/bin/${pkg}"
+            else
+                printf 'dummy\n' > "$artifact"
+            fi
+        fi
+    }
+
+    local cmd="${1:-}"
+    case "$cmd" in
+        auth)
+            exit 0
+            ;;
+        repo)
+            case " $* " in
+                *nameWithOwner*) emit '{"nameWithOwner":"owner/PrevTermuxPackage"}' ;;
+                *defaultBranch*) emit '{"defaultBranch":"main"}' ;;
+                *) : ;;
+            esac
+            exit 0
+            ;;
+        workflow)
+            exit 0
+            ;;
+        run)
+            case " $* " in
+                *displayTitle*)
+                    if [[ -n "$RUNS" && -f "$RUNS" ]]; then
+                        emit "$(cat "$RUNS")"
+                    else
+                        emit '[]'
+                    fi
+                    ;;
+                *)
+                    # `gh run list --json databaseId --jq '.[0].databaseId'` → run id
+                    emit '[{"databaseId":9999}]'
+                    ;;
+            esac
+            exit 0
+            ;;
+        release)
+            local sub="${2:-}"
+            case "$sub" in
+                view)
+                    exit 1
+                    ;;
+                list)
+                    if [[ -n "$RELEASES" && -f "$RELEASES" ]]; then
+                        emit "$(cat "$RELEASES")"
+                    else
+                        emit '[]'
+                    fi
+                    exit 0
+                    ;;
+                download)
+                    # args[0]=release args[1]=download args[2]=tag + flags
+                    local tag="" dir="" pattern="" args
+                    args=("$@")
+                    local i=2
+                    while [[ $i -lt ${#args[@]} ]]; do
+                        a="${args[$i]}"
+                        case "$a" in
+                            --pattern) pattern="${args[$((i + 1))]:-}"; i=$((i + 2)) ;;
+                            --dir)     dir="${args[$((i + 1))]:-}"; i=$((i + 2)) ;;
+                            --*)       i=$((i + 1)) ;;
+                            *)
+                                if [[ -z "$tag" ]]; then tag="$a"; fi
+                                i=$((i + 1))
+                                ;;
+                        esac
+                    done
+                    [[ -n "$tag" && -n "$dir" ]] || { echo "stub gh: args incompletos tag=$tag dir=$dir" >&2; exit 1; }
+                    mkdir -p "$dir"
+
+                    # ── Pool (fetch): manifest.json + assets del pool ─────────
+                    if [[ "$tag" == "prev-termux-pool-"* ]]; then
+                        if [[ "$pattern" == "manifest.json" ]]; then
+                            local asset="${POOL_PKG}_${POOL_VER}_aarch64.deb"
+                            local pkg_tar="${POOL_PKG}_${POOL_VER}_aarch64.pkg.tar.xz"
+                            local sha
+                            sha="$(printf 'pool-dummy\n' | sha256sum | cut -d' ' -f1)"
+                            printf '{"entries":[{"pkg":"%s","ver":"%s","mode":"%s","arch":"aarch64","asset":"%s","sha256":"%s","pkg_tar":"%s","pkg_tar_sha256":"%s"}]}\n' \
+                                "$POOL_PKG" "$POOL_VER" "$POOL_MODE" "$asset" "$sha" "$pkg_tar" "$sha" \
+                                > "$dir/manifest.json"
+                        else
+                            printf 'pool-dummy\n' > "$dir/$pattern"
+                        fi
+                        exit 0
+                    fi
+
+                    # ── Release normal: resolver pkg/ver vía tagmap ──────────
+                    local pkg="" ver="" override=""
+                    if [[ -n "$TAGMAP" && -f "$TAGMAP" ]]; then
+                        local t p v ov
+                        while IFS=$'\t' read -r t p v ov; do
+                            [[ -z "$t" || "$t" == \#* ]] && continue
+                            if [[ "$t" == "$tag" ]]; then
+                                pkg="$p"; ver="$v"; override="${ov:-}"
+                                break
+                            fi
+                        done < "$TAGMAP"
+                    fi
+                    if [[ -z "$pkg" || -z "$ver" ]]; then
+                        echo "stub gh: tag '$tag' no está en tagmap" >&2
+                        exit 1
+                    fi
+
+                    # Extensión según el patrón pedido (.deb o .pkg.tar.xz)
+                    local ext
+                    if [[ "$pattern" == *".deb" ]]; then ext=".deb"; else ext=".pkg.tar.xz"; fi
+                    local artifact="${override:-${pkg}-${ver}-0-aarch64}${ext}"
+
+                    # Layout según el tag: -subversioned → home/.local/opt
+                    if [[ "$tag" == *"-subversioned" ]]; then
+                        make_tar "$dir/$artifact" "subversioned" "$pkg" "$ver"
+                    else
+                        make_tar "$dir/$artifact" "standard" "$pkg" "$ver"
+                    fi
+                    echo "stub gh: creado $dir/$artifact (tag=$tag)" >&2
+                    exit 0
+                    ;;
+            esac
+            ;;
+    esac
+    echo "stub gh: subcomando no soportado: $*" >&2
+    exit 1
+}
+
+main_stub "$@"

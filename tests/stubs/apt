@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stub apt: registra los args en PM_LOG (verifica que NO se pasa -y).
+# NO instala nada y sale 0.
+set -u
+echo "APT $*" >> "${PM_LOG:-/dev/null}"
+exit 0

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stub pacman: registra los args en PM_LOG (verifica que NO se pasa --noconfirm).
+# NO instala nada y sale 0.
+set -u
+echo "PACMAN $*" >> "${PM_LOG:-/dev/null}"
+exit 0
