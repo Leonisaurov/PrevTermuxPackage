@@ -218,6 +218,87 @@ _artifact_version_for_pkg() {
     esac
 }
 
+# ─── _version_label ─────────────────────────────────────────────────────────────
+# Label de presentación de una versión para _select_line (fzf o menú numerado):
+#   {pkg}-{ver}  [normal, subversioned] | [normal] | [subversioned]
+# Usado TANTO para construir las opciones del selector como para resolver la
+# línea elegida de vuelta a su versión (match exacto, sin parsear regex).
+_version_label() {
+    local pkg="$1" ver="$2" normal="$3" sub="$4"
+    local modes=""
+    if [[ "$normal" == "y" && "$sub" == "y" ]]; then
+        modes="[normal, subversioned]"
+    elif [[ "$normal" == "y" ]]; then
+        modes="[normal]"
+    else
+        modes="[subversioned]"
+    fi
+    printf '%s\n' "${pkg}-${ver}  ${modes}"
+}
+
+# ─── _release_tags ──────────────────────────────────────────────────────────────
+# Parsea el JSON de `gh release list --json tagName,createdAt` y devuelve por
+# stdout las tags del paquete con forma {pkg}-{ver}-{sha7}(-subversioned), una
+# por línea en TSV:
+#   ver \t createdAt \t tagName \t modo
+# donde modo es "normal" o "subversioned". La versión se extrae con el mismo
+# enfoque de ver_tag (sed con $pkg_re escapado, tolerando guiones en {ver}).
+# Descarta colisiones de prefijo: una tag 'python-numpy-1.26.4-aaa1111' al pedir
+# 'python' extraería ver 'numpy-1.26.4', que no empieza por dígito (regla
+# documentada en _artifact_version_for_pkg) y se filtra aquí. El orden de salida
+# es el de entrada de gh release list (más recientes primero).
+_release_tags() {
+    local releases_json="$1"
+    local pkg="$2"
+    local pkg_re
+    pkg_re="$(_escape_regex "$pkg")"
+    printf '%s' "$releases_json" | jq -r --arg p "$pkg" --arg pr "$pkg_re" '
+        [ .[] | select(.tagName | startswith($p + "-")) |
+                 select(.tagName | test("^" + $pr + "-.+-[0-9a-f]{7}(-subversioned)?$")) ]
+        | .[] | . as $t
+        | ($t.tagName | sub("^" + $pr + "-"; "") | sub("-[0-9a-f]{7}(-subversioned)?$"; "")) as $v
+        | select($v | test("^[0-9]"))
+        | [ $v, $t.createdAt, $t.tagName,
+            (if ($t.tagName | test("-subversioned$")) then "subversioned" else "normal" end)
+          ] | @tsv
+    ' 2>/dev/null || true
+}
+
+# ─── _release_versions ──────────────────────────────────────────────────────────
+# Agrega las filas TSV de _release_tags en VERSIONES ÚNICAS con sus modos.
+# Recibe el TSV (ver \t date \t tag \t modo) por argumento y devuelve por
+# stdout una fila por versión en TSV:
+#   ver \t normal(y|n) \t sub(y|n) \t createdAt_máx \t tag_normal \t tag_sub
+# donde tag_normal/tag_sub son las tags MÁS RECIENTES de ese modo para la
+# versión (primeras en aparecer: la entrada de gh release list ya viene de más
+# reciente a más antigua). Ordenadas por createdAt desc (más reciente primero),
+# no lexicográfico.
+_release_versions() {
+    local tags_txt="$1"
+    local ver="" date="" tag="" mode=""
+    local -A vdate=() vn=() vs=()
+    while IFS=$'\t' read -r ver date tag mode; do
+        [[ -z "$ver" ]] && continue
+        if [[ -z "${vdate[$ver]:-}" || "$date" > "${vdate[$ver]}" ]]; then
+            vdate[$ver]="$date"
+        fi
+        if [[ "$mode" == "normal" ]]; then
+            [[ -z "${vn[$ver]:-}" ]] && vn[$ver]="$tag"
+        else
+            [[ -z "${vs[$ver]:-}" ]] && vs[$ver]="$tag"
+        fi
+    done <<< "$tags_txt"
+
+    local v="" n="" s=""
+    for v in "${!vdate[@]}"; do
+        n="n"; s="n"
+        [[ -n "${vn[$v]:-}" ]] && n="y"
+        [[ -n "${vs[$v]:-}" ]] && s="y"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$v" "$n" "$s" "${vdate[$v]}" "${vn[$v]:-}" "${vs[$v]:-}"
+    done | sort -t$'\t' -k4,4r
+}
+
 # ─── _subinstall_extract ───────────────────────────────────────────────────────
 # Extrae un artifact a ~/.local/opt/<pkg>-<version>/. Acepta pkg/version
 # EXPLÍCITOS (opcionales): el flujo GitHub de cmd_subinstall los pasa ya
@@ -680,14 +761,18 @@ cmd_build() {
 }
 
 # ─── Command: subinstall ─────────────────────────────────────────────────────────
-# Usage: prev-termux subinstall [<file.pkg.tar.xz>]
+# Usage: prev-termux subinstall [<package>|<file.pkg.tar.xz>]
 #
 # Extracts a .pkg.tar.xz to ~/.local/opt/<pkg>-<version>/ with versioned
 # symlinks in ~/.local/bin/<bin>-<version>.
 #
-# If no file is provided, shows all artifacts in output/ via fzf
+# If no argument is given, shows all artifacts in output/ via fzf
 # (or a numbered menu if fzf is not installed).
-# NEVER interacts with GitHub — works only with local files.
+# If a package name is given, first picks the version (all available, newest
+# first, via _select_line) and then the mode (subversioned/normal, only asked
+# when both exist), and downloads+extracts that release from GitHub.
+# If a file is given, extracts it directly.
+# NEVER uses pacman — works only with local extraction.
 #
 cmd_subinstall() {
     local target_file=""
@@ -767,10 +852,11 @@ cmd_subinstall() {
     fi
 
     # ── Flujo GitHub: descargar la release del paquete ────────────────────────
-    # Lista los releases del repo y filtra tags con forma {pkg}-{ver}-{sha7}
-    # (normal) y {pkg}-{ver}-{sha7}-subversioned. {ver} puede contener guiones;
-    # el sha7 son exactamente 7 hex al final del tag. Filtro con jq sobre
-    # tagName (no con parser de filenames).
+    # Lista los releases del repo y construye la lista de VERSIONES ÚNICAS del
+    # paquete con sus modos disponibles (normal y/o subversioned). Cada versión
+    # se extrae del tag con el patrón {pkg}-{ver}-{sha7}(-subversioned)
+    # tolerando guiones en {ver} (mismo enfoque de ver_tag) y se ordena por
+    # createdAt desc (más reciente primero), no lexicográficamente.
     info "Buscando releases de '${pkg_filter}' en ${RELEASE_REPO}..."
     local releases_json=""
     releases_json="$(gh release list -R "$RELEASE_REPO" --limit 200 \
@@ -779,102 +865,116 @@ cmd_subinstall() {
         die "No se pudo listar releases de ${RELEASE_REPO} (o no hay releases)."
     fi
 
-    local groups="" pkg_re=""
     # $pkg_re = nombre del paquete escapado para usarlo como texto LITERAL en la
     # regex de test() (jq usa ERE/POSIX, mismo escape que sed): 'libc++' →
     # 'libc\+\+'; sin escapar, los '+' actuarían como cuantificadores y el tag
     # 'libc++-...' no matchearía. startswith() sigue usando el nombre crudo
     # (comparación literal de cadena, sin regex).
+    local pkg_re="" tags_txt="" versions_txt=""
     pkg_re="$(_escape_regex "$pkg_filter")"
-    groups="$(printf '%s' "$releases_json" | jq -c --arg p "$pkg_filter" --arg pr "$pkg_re" '
-        {
-          normal: [.[] | select(.tagName | startswith($p + "-")) |
-                     select(.tagName | test("^" + $pr + "-.+-[0-9a-f]{7}$")) |
-                     select(.tagName | test("-subversioned$") | not)],
-          sub:    [.[] | select(.tagName | startswith($p + "-")) |
-                     select(.tagName | test("^" + $pr + "-.+-[0-9a-f]{7}-subversioned$"))]
-        }' 2>/dev/null || echo '{"normal":[],"sub":[]}')"
-
-    # Candidatos de cada grupo ordenados de más reciente a más antiguo
-    # (createdAt desc). Se usan para el fallback de colisión de prefijos.
-    local normal_tags="" sub_tags=""
-    normal_tags="$(printf '%s' "$groups" | jq -r '.normal | sort_by(.createdAt) | reverse | .[].tagName' 2>/dev/null || true)"
-    sub_tags="$(printf '%s' "$groups" | jq -r '.sub | sort_by(.createdAt) | reverse | .[].tagName' 2>/dev/null || true)"
-
-    # Más reciente de cada grupo (createdAt máximo)
-    local normal_latest sub_latest
-    normal_latest="$(printf '%s' "$groups" | jq -c '.normal | sort_by(.createdAt) | last // empty' 2>/dev/null || true)"
-    sub_latest="$(printf '%s' "$groups" | jq -c '.sub | sort_by(.createdAt) | last // empty' 2>/dev/null || true)"
-
-    local normal_tag="" normal_ver="" normal_date=""
-    local sub_tag="" sub_ver="" sub_date=""
-    if [[ -n "$normal_latest" ]]; then
-        normal_tag="$(printf '%s' "$normal_latest" | jq -r '.tagName // ""')"
-        normal_date="$(printf '%s' "$normal_latest" | jq -r '.createdAt // ""')"
-        normal_ver="$(printf '%s' "$normal_tag" | sed -E "s/^${pkg_re}-(.*)-[0-9a-f]{7}$/\1/")"
-    fi
-    if [[ -n "$sub_latest" ]]; then
-        sub_tag="$(printf '%s' "$sub_latest" | jq -r '.tagName // ""')"
-        sub_date="$(printf '%s' "$sub_latest" | jq -r '.createdAt // ""')"
-        sub_ver="$(printf '%s' "$sub_tag" | sed -E "s/^${pkg_re}-(.*)-[0-9a-f]{7}-subversioned$/\1/")"
-    fi
-
-    # ── Diálogo de selección ──────────────────────────────────────────────────
-    local choice=""
-    if [[ -n "$normal_latest" && -n "$sub_latest" ]]; then
-        echo ""
-        info "Releases disponibles de '${pkg_filter}':"
-        echo "  1) Subversion  ${sub_ver}  (${sub_date:0:10})  → ${sub_tag}"
-        echo "  2) Normal      ${normal_ver}  (${normal_date:0:10})  → ${normal_tag}"
-        echo ""
-        read -r -p "Selecciona 1 o 2 [2]: " choice || choice="2"
-        case "$choice" in
-            1) choice="subversioned" ;;
-            2|"") choice="normal" ;;
-            *) die "Selección inválida: '${choice}'. Saliendo." ;;
-        esac
-    elif [[ -n "$normal_latest" ]]; then
-        echo ""
-        warn "Este paquete aún no se ha compilado subversionado."
-        warn "Solo existe la release normal: ${normal_tag} (${normal_date:0:10})"
-        read -r -p "$(warn "¿Descargar la release normal de todos modos? [y/N] ")" choice || choice="n"
-        if [[ "$choice" != "y" && "$choice" != "Y" ]]; then
-            info "Descarga cancelada. Saliendo."
-            exit 0
-        fi
-        choice="normal"
-    elif [[ -n "$sub_latest" ]]; then
-        echo ""
-        warn "Solo existe la release subversioned: ${sub_tag} (${sub_date:0:10})"
-        warn "No hay release normal para este paquete."
-        read -r -p "$(warn "¿Descargar la release subversioned de todos modos? [y/N] ")" choice || choice="n"
-        if [[ "$choice" != "y" && "$choice" != "Y" ]]; then
-            info "Descarga cancelada. Saliendo."
-            exit 0
-        fi
-        choice="subversioned"
-    else
+    tags_txt="$(_release_tags "$releases_json" "$pkg_filter")"
+    versions_txt="$(_release_versions "$tags_txt")"
+    if [[ -z "$versions_txt" ]]; then
         die "No se encontraron releases de '${pkg_filter}' en ${RELEASE_REPO}. Compílalo primero: ./scripts/prev-termux build ${pkg_filter}"
+    fi
+
+    # ── Selección de versión (fzf o menú numerado vía _select_line) ─────────
+    # Cada fila TSV: ver | normal | sub | createdAt_máx | tag_normal | tag_sub
+    local -a vrows=()
+    mapfile -t vrows <<< "$versions_txt"
+    local chosen_ver="" chosen_normal="" chosen_sub="" chosen_date=""
+    local chosen_tag_n="" chosen_tag_s=""
+    local -a labels=()
+    local vv="" nn="" ss="" dd="" tn="" ts="" row="" label=""
+    for row in "${vrows[@]}"; do
+        IFS=$'\t' read -r vv nn ss dd tn ts <<< "$row"
+        labels+=("$(_version_label "$pkg_filter" "$vv" "$nn" "$ss")")
+    done
+
+    if [[ ${#vrows[@]} -eq 1 ]]; then
+        IFS=$'\t' read -r chosen_ver chosen_normal chosen_sub chosen_date chosen_tag_n chosen_tag_s <<< "${vrows[0]}"
+        ok "Única versión disponible de '${pkg_filter}': ${chosen_ver}"
+    else
+        local selected=""
+        echo ""
+        info "Versiones disponibles de '${pkg_filter}' (${#vrows[@]}, más reciente primero):"
+        selected="$(_select_line "Selecciona versión de ${pkg_filter}: " "${labels[@]}")" || \
+            die "Selección de versión cancelada o inválida"
+        [[ -z "$selected" ]] && die "No se seleccionó ninguna versión"
+
+        # Resolver la línea elegida a su versión con match EXACTO del label
+        # (sin parsear regex: robusto ante versiones con guiones).
+        chosen_ver=""
+        for row in "${vrows[@]}"; do
+            IFS=$'\t' read -r vv nn ss dd tn ts <<< "$row"
+            if [[ "$(_version_label "$pkg_filter" "$vv" "$nn" "$ss")" == "$selected" ]]; then
+                chosen_ver="$vv"; chosen_normal="$nn"; chosen_sub="$ss"
+                chosen_date="$dd"; chosen_tag_n="$tn"; chosen_tag_s="$ts"
+                break
+            fi
+        done
+        if [[ -z "$chosen_ver" ]]; then
+            die "No se pudo resolver la versión seleccionada: '${selected}'"
+        fi
+        ok "Versión seleccionada: ${chosen_ver}"
+    fi
+
+    # ── Diálogo de modo (subversioned vs normal) para la versión elegida ────
+    local mode=""
+    if [[ "$chosen_normal" == "y" && "$chosen_sub" == "y" ]]; then
+        local mode_choice=""
+        echo ""
+        info "Modos disponibles para '${pkg_filter}' ${chosen_ver}:"
+        mode_choice="$(_select_line "Modo para ${pkg_filter} ${chosen_ver}: " "Subversion" "Normal")" || \
+            die "Selección de modo cancelada o inválida"
+        case "$mode_choice" in
+            Subversion) mode="subversioned" ;;
+            Normal) mode="normal" ;;
+            *) die "Selección de modo inválida: '${mode_choice}'. Saliendo." ;;
+        esac
+    elif [[ "$chosen_sub" == "y" ]]; then
+        echo ""
+        info "Solo existe release subversioned para '${pkg_filter}' ${chosen_ver}: ${chosen_tag_s}"
+        mode="subversioned"
+    elif [[ "$chosen_normal" == "y" ]]; then
+        local answer=""
+        echo ""
+        warn "Este paquete aún no se ha compilado subversionado para la versión ${chosen_ver}."
+        warn "Solo existe la release normal: ${chosen_tag_n} (${chosen_date:0:10})"
+        read -r -p "$(warn "¿Descargar la release normal de todos modos? [y/N] ")" answer || answer="n"
+        if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+            info "Descarga cancelada. Saliendo."
+            exit 0
+        fi
+        mode="normal"
+    else
+        die "No hay releases de '${pkg_filter}' ${chosen_ver} (inconsistencia interna)."
     fi
 
     # ── Descarga del .pkg.tar.xz a $TMPDIR con cross-check de paquete ────────
     # (nunca output/; --clobber, sin --skip-existing: así el artifact descargado
-    # es SIEMPRE el de la release elegida, normal o subversioned)
+    # es SIEMPRE el de la versión+modo elegidos).
+    #
+    # Candidatos: las tags de EXACTAMENTE la versión+modo elegidos (puede haber
+    # varias si la misma versión se compiló desde commits distintos), de más
+    # reciente a más antigua.
     #
     # Colisión de prefijos: el filtro jq (startswith($p + "-") + regex
     # ^$p-.+-[0-9a-f]{7}$) matchea también paquetes cuyo nombre empieza por el
-    # pedido + guión: 'python' matchea python-numpy-*, python-pillow-*. Como se
-    # elige por createdAt máximo, el tag más reciente del prefijo podría NO ser
-    # el paquete pedido. Defensa (Opción A): se descarga el artifact y se cruza
-    # con _artifact_version_for_pkg (validación desde la izquierda); si ningún
+    # pedido + guión: 'python' matchea python-numpy-*, python-pillow-*. Aunque
+    # _release_tags descarta las versiones que no empiezan por dígito, la
+    # defensa final (Opción A) es descargar el artifact y cruzarlo con
+    # _artifact_version_for_pkg (validación desde la izquierda); si ningún
     # artifact pertenece a $pkg_filter, se descarta el tag y se prueba el
-    # siguiente candidato más reciente.
+    # siguiente candidato de la misma versión.
     local -a candidate_tags=()
-    if [[ "$choice" == "normal" ]]; then
-        mapfile -t candidate_tags <<< "$normal_tags"
-    else
-        mapfile -t candidate_tags <<< "$sub_tags"
-    fi
+    mapfile -t candidate_tags <<< "$(printf '%s' "$releases_json" | jq -r --arg p "$pkg_filter" --arg pr "$pkg_re" --arg v "$chosen_ver" --arg m "$mode" '
+        [ .[] | select(.tagName | startswith($p + "-" + $v + "-")) |
+                 select(.tagName | test("^" + $pr + "-.+-[0-9a-f]{7}(-subversioned)?$")) |
+                 select(if $m == "normal" then (.tagName | test("-subversioned$") | not)
+                                          else (.tagName | test("-subversioned$")) end) ]
+        | sort_by(.createdAt) | reverse | .[].tagName
+    ' 2>/dev/null || true)"
 
     local found_tag="" tmpdir="" candidate=""
     local -a good_artifacts=()
@@ -951,7 +1051,7 @@ cmd_subinstall() {
     done
 
     if [[ -z "$found_tag" ]]; then
-        die "No se encontró ninguna release de '${pkg_filter}' cuyos artifacts sean realmente de ese paquete (posible colisión de prefijo: python-numpy, python-pillow...). Compílalo primero: ./scripts/prev-termux build ${pkg_filter}"
+        die "No se encontró ninguna release de '${pkg_filter}' ${chosen_ver} cuyos artifacts sean realmente de ese paquete (posible colisión de prefijo: python-numpy, python-pillow...). Compílalo primero: ./scripts/prev-termux build ${pkg_filter}"
     fi
 
     # ── Extraer cada artifact verificado ──────────────────────────────────────
@@ -1018,8 +1118,11 @@ _select_line() {
 #
 # Instala una build NORMAL (no subversioned) de <package> con el gestor de
 # paquetes detectado (pacman o apt):
-#   • pacman → descarga el .pkg.tar.xz de la release normal más reciente
-#     (o de <version> si se pasa) a $TMPDIR y ejecuta `pacman -U <file>`.
+#   • Primero se elige la versión (fzf o menú numerado vía _select_line) entre
+#     las que tienen release NORMAL, ordenadas por createdAt desc (más reciente
+#     primero). Con <version> explícito se salta el selector.
+#   • pacman → descarga el .pkg.tar.xz de esa versión a $TMPDIR y ejecuta
+#     `pacman -U <file>`.
 #   • apt    → igual pero con el .deb y `apt install <file>`.
 # NUNCA pasa flags de auto-yes (--noconfirm / -y): el gestor pide confirmación.
 # --arch <arch> restringe el patrón de descarga (ej: --arch aarch64).
@@ -1073,11 +1176,14 @@ cmd_install() {
         die "No package manager found (pacman or apt)"
     fi
 
-    # ── Buscar la release NORMAL más reciente del paquete ────────────────────
-    # Misma lógica de filtrado de tags que cmd_subinstall pero SOLO las
-    # normales (sin sufijo -subversioned). Si se pasa <version>, se filtra
-    # además por esa versión exacta (match de cadena literal, no regex).
-    info "Buscando release normal de '${package}' en ${RELEASE_REPO}..."
+    # ── Versiones NORMAL disponibles y selección de versión ─────────────────
+    # Construye la lista de VERSIONES ÚNICAS del paquete (igual que subinstall,
+    # reutilizando _release_tags/_release_versions) y se queda solo con las que
+    # tienen release NORMAL (col normal == "y"). La selección se hace con
+    # _select_line (fzf o menú numerado), ordenada por createdAt desc (más
+    # reciente primero). Si se pasa <version>, se salta el selector y se usa esa
+    # versión exacta.
+    info "Buscando releases normal de '${package}' en ${RELEASE_REPO}..."
     local releases_json=""
     releases_json="$(gh release list -R "$RELEASE_REPO" --limit 200 \
         --json tagName,createdAt 2>/dev/null || true)"
@@ -1085,32 +1191,89 @@ cmd_install() {
         die "No se pudo listar releases de ${RELEASE_REPO} (o no hay releases)."
     fi
 
-    local normals="" pkg_re=""
     # $pkg_re escapado para test() (texto literal; jq ERE/POSIX, mismo escape que
     # sed): 'libc++' → 'libc\+\+'. startswith() usa el nombre crudo.
+    local pkg_re="" tags_txt="" versions_txt=""
     pkg_re="$(_escape_regex "$package")"
-    normals="$(printf '%s' "$releases_json" | jq -c --arg p "$package" --arg pr "$pkg_re" --arg v "$version" '
-        ([.[] | select(.tagName | startswith($p + "-")) |
-                 select(.tagName | test("^" + $pr + "-.+-[0-9a-f]{7}$")) |
-                 select(.tagName | test("-subversioned$") | not)]) as $norm
-        | if $v == "" then $norm
-          else [ $norm[] | select(.tagName | startswith($p + "-" + $v + "-")) ]
-          end' 2>/dev/null || echo '[]')"
+    tags_txt="$(_release_tags "$releases_json" "$package")"
+    versions_txt="$(_release_versions "$tags_txt")"
 
-    # Candidatos ordenados de más reciente a más antiguo (createdAt desc)
-    local candidate_tags=""
-    candidate_tags="$(printf '%s' "$normals" | jq -r 'sort_by(.createdAt) | reverse | .[].tagName' 2>/dev/null || true)"
-    if [[ -z "$candidate_tags" ]]; then
+    # Filtrar solo filas con release NORMAL (col 2 == "y").
+    # Cada fila TSV: ver | normal | sub | createdAt_máx | tag_normal | tag_sub
+    local -a vrows=()
+    local vv="" nn="" ss="" dd="" tn="" ts="" row=""
+    while IFS=$'\t' read -r vv nn ss dd tn ts; do
+        [[ -n "$vv" && "$nn" == "y" ]] && vrows+=("$vv	$nn	$ss	$dd	$tn	$ts")
+    done <<< "$versions_txt"
+
+    if [[ ${#vrows[@]} -eq 0 ]]; then
         die "No hay release normal de '${package}'${version:+ (versión '${version}')} en ${RELEASE_REPO}. Compílalo primero: ./scripts/prev-termux build ${package}"
     fi
 
+    local chosen_ver="" chosen_normal="" chosen_sub="" chosen_date=""
+    local chosen_tag_n="" chosen_tag_s=""
+    if [[ -n "$version" ]]; then
+        # <version> explícito: buscar la fila NORMAL de esa versión exacta
+        chosen_ver=""
+        for row in "${vrows[@]}"; do
+            IFS=$'\t' read -r vv nn ss dd tn ts <<< "$row"
+            if [[ "$vv" == "$version" ]]; then
+                chosen_ver="$vv"; chosen_normal="$nn"; chosen_sub="$ss"
+                chosen_date="$dd"; chosen_tag_n="$tn"; chosen_tag_s="$ts"
+                break
+            fi
+        done
+        if [[ -z "$chosen_ver" ]]; then
+            local available=""
+            available="$(printf '%s\n' "${vrows[@]}" | cut -d$'\t' -f1 | paste -sd, - 2>/dev/null || true)"
+            die "No hay release normal de '${package}' versión '${version}' en ${RELEASE_REPO}. Disponibles: ${available}"
+        fi
+        ok "Versión solicitada: ${chosen_ver}"
+    elif [[ ${#vrows[@]} -eq 1 ]]; then
+        IFS=$'\t' read -r chosen_ver chosen_normal chosen_sub chosen_date chosen_tag_n chosen_tag_s <<< "${vrows[0]}"
+        ok "Única versión normal disponible de '${package}': ${chosen_ver}"
+    else
+        # Selección interactiva con _select_line (fzf o menú numerado)
+        local -a labels=()
+        local label=""
+        for row in "${vrows[@]}"; do
+            IFS=$'\t' read -r vv nn ss dd tn ts <<< "$row"
+            labels+=("$(_version_label "$package" "$vv" "$nn" "$ss")")
+        done
+        local selected=""
+        echo ""
+        info "Versiones normales disponibles de '${package}' (${#vrows[@]}, más reciente primero):"
+        selected="$(_select_line "Selecciona versión de ${package}: " "${labels[@]}")" || \
+            die "Selección de versión cancelada o inválida"
+        [[ -z "$selected" ]] && die "No se seleccionó ninguna versión"
+
+        # Resolver la línea elegida a su versión con match EXACTO del label
+        chosen_ver=""
+        for row in "${vrows[@]}"; do
+            IFS=$'\t' read -r vv nn ss dd tn ts <<< "$row"
+            if [[ "$(_version_label "$package" "$vv" "$nn" "$ss")" == "$selected" ]]; then
+                chosen_ver="$vv"; chosen_normal="$nn"; chosen_sub="$ss"
+                chosen_date="$dd"; chosen_tag_n="$tn"; chosen_tag_s="$ts"
+                break
+            fi
+        done
+        if [[ -z "$chosen_ver" ]]; then
+            die "No se pudo resolver la versión seleccionada: '${selected}'"
+        fi
+        ok "Versión seleccionada: ${chosen_ver}"
+    fi
+
     # ── Descarga del artifact a $TMPDIR con cross-check de paquete ────────────
+    # Candidatos: las tags NORMAL de EXACTAMENTE la versión elegida (puede haber
+    # varias si la misma versión se compiló desde commits distintos), de más
+    # reciente a más antigua.
+    #
     # Colisión de prefijos: el filtro jq matchea también python-numpy-*,
-    # python-pillow-* al buscar 'python'. El tag más reciente del prefijo podría
-    # ser de OTRO paquete. Defensa (Opción A): se descarga el artifact y se cruza
-    # con _artifact_version_for_pkg (validación desde la izquierda); si ningún
-    # artifact pertenece a $package, se descarta el tag y se prueba el
-    # siguiente candidato más reciente.
+    # python-pillow-* al buscar 'python'. Aunque _release_tags descarta las
+    # versiones que no empiezan por dígito, la defensa final (Opción A) es
+    # descargar el artifact y cruzarlo con _artifact_version_for_pkg (validación
+    # desde la izquierda); si ningún artifact pertenece a $package, se descarta
+    # el tag y se prueba el siguiente candidato.
     local pattern="*"
     if [[ -n "$arch" ]]; then
         pattern="*${arch}"
@@ -1121,10 +1284,16 @@ cmd_install() {
         pattern="${pattern}.deb"
     fi
 
+    local -a candidates=()
+    mapfile -t candidates <<< "$(printf '%s' "$releases_json" | jq -r --arg p "$package" --arg pr "$pkg_re" --arg v "$chosen_ver" '
+        [ .[] | select(.tagName | startswith($p + "-" + $v + "-")) |
+                 select(.tagName | test("^" + $pr + "-.+-[0-9a-f]{7}$")) |
+                 select(.tagName | test("-subversioned$") | not) ]
+        | sort_by(.createdAt) | reverse | .[].tagName
+    ' 2>/dev/null || true)"
+
     local tag="" ver="" artifact="" found_tag="" tmpdir="" candidate=""
     local -a artifacts=()
-    local -a candidates=()
-    mapfile -t candidates <<< "$candidate_tags"
 
     for candidate in "${candidates[@]}"; do
         [[ -z "$candidate" ]] && continue
@@ -1189,7 +1358,7 @@ cmd_install() {
     done
 
     if [[ -z "$found_tag" ]]; then
-        die "No se encontró ninguna release de '${package}' cuyos artifacts sean realmente de ese paquete (posible colisión de prefijo). Compílalo primero: ./scripts/prev-termux build ${package}"
+        die "No se encontró ninguna release de '${package}' ${chosen_ver} cuyos artifacts sean realmente de ese paquete (posible colisión de prefijo). Compílalo primero: ./scripts/prev-termux build ${package}"
     fi
 
     ver="$(printf '%s' "$tag" | sed -E "s/^${pkg_re}-(.*)-[0-9a-f]{7}$/\1/")"
@@ -1639,17 +1808,20 @@ ${BOLD}Commands:${NC}
       Creates versioned symlinks in ~/.local/bin/<bin>-<version>
       If no argument is given, shows all artifacts in output/ via fzf
       (or a numbered menu if fzf is not installed).
-      If a package name is given, downloads the latest release of that
-      package from GitHub (normal or subversioned) and extracts it.
+      If a package name is given, first picks the version (fzf or numbered
+      menu; all available versions, newest first), then the mode
+      (subversioned/normal, asked only when both exist), and downloads
+      that release from GitHub and extracts it.
       If a .pkg.tar.xz file is given, extracts it directly.
       Never uses pacman -U — purely local extraction
 
   install <package> [<version>] [--arch <arch>]
       Install a NORMAL build of <package> with the detected package manager
-      (pacman or apt): downloads the .pkg.tar.xz (pacman) or .deb (apt) of
-      the latest normal release — or of <version> if given — to $TMPDIR and
-      runs the manager WITHOUT auto-yes flags (the manager asks for
-      confirmation).
+      (pacman or apt): picks the version (fzf or numbered menu, only
+      versions with a normal release), downloads its .pkg.tar.xz (pacman)
+      or .deb (apt) to $TMPDIR and runs the manager WITHOUT auto-yes flags
+      (the manager asks for confirmation).
+      <version>    Skip the selector and use that exact version.
       --arch <arch>   Restrict the download pattern to that architecture
 
   switch [<package>]
