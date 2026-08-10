@@ -19,7 +19,7 @@ El build system de termux-packages **master** no compila los paquetes histórico
 | 002 | patch 002 | `scripts/build/termux_extract_dep_info.sh` | `PKG=${PKG/-dev/}` | `# Legacy compatibility: Normalize *-dev packages to their parent` |
 | 003 | patch 003 | `scripts/build/termux_step_setup_variables.sh` | Source tolerante de python/libllvm (grep en vez de sourcear) + fallbacks | `# Legacy compatibility: commits historicos (2018-2023) no tienen...` |
 | 004 | patch 004 | `scripts/build/termux_step_make_install.sh` | `termux_setup_rust` automático cuando cargo no existe | `# Legacy compatibility: old build.sh files don't call termux_setup_rust` |
-| 005 | patch 005 | `scripts/build/setup/termux_setup_rust.sh` | Extracción de versión con grep + fallback | `# Legacy compatibility: extract version with grep instead of sourcing` |
+| 005 | patch 005 | `scripts/build/setup/termux_setup_rust.sh` | Extracción de versión con grep + fallback + normalización `##*+really` de dist versions `+really` (el toolchain real es la parte tras `+really`, como el srcurl upstream `##*y`; rust `1.90.0+really1.90.0` y pin temporal `1.90.0+really1.89.0` f9df163fe2..77810a1e1a, bat@2f2adec, run 31429289079) | `# Legacy compatibility: extract version with grep instead of sourcing` |
 | 006 | patch 006 | `scripts/build/termux_step_start_build.sh` | `BUILD_IN_SRC` acepta `yes`/`true` | `# Legacy compatibility: build.sh files from 2018 use "yes" instead of "true"` |
 | 007 | patch 007 | `scripts/build/termux_step_patch_package.sh` | Normalización `--- ../pkg-ver/` → `--- ./` + `patch --batch -p1` (sin debug) | `# Legacy compatibility: normalize diffs from old packages...` |
 | 008 | ~~patch 008~~ | — | **DESCARTADO** (solo marcadores de debug, sin valor) | — |
