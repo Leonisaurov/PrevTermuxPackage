@@ -138,7 +138,7 @@ Al compilar un commit antiguo, la secuencia de fallos es:
 | Hallazgo | Estado | Evidencia |
 |----------|--------|-----------|
 | **Exit 2 silencioso** en pipelines `grep\|head\|tr` sobre archivos inexistentes (`set -euo pipefail`) | ✅ RESUELTO | `\|\| true` en los parches 003/005 (migrados a `build-system/`) |
-| **Debug del parche 007** (imprimía `DEBUG VARS`, `SED EXIT`, `PATCH EXIT` para diagnosticar el exit 2) | ✅ RESUELTO | La causa era el exit 2 de `set -euo pipefail`; el debug quedó fuera del flujo (parches 007–009 = REFERENCIA, pendientes de limpiar) |
+| **Debug del parche 007** (imprimía `DEBUG VARS`, `SED EXIT`, `PATCH EXIT` para diagnosticar el exit 2) | ✅ RESUELTO | La causa era el exit 2 de `set -euo pipefail`; el debug quedó fuera del flujo (parches 007–009 = REFERENCIA) y se **limpió el 2026-08-10** (007/009 solo parte funcional; 008 marcado DESCARTADO) |
 | **automake-1.16 ausente en el runner** (remake espurio de `Makefile.in` en sub-makes) | ✅ RESUELTO | Shim genérico `automake-N.N` → `automake` en `setup_variables` (commit `a750096`) + `autoreconf -fi` por paquete: tar = FASE 2b (`b90e831`), util-linux = FASE 2c (`ed86935`, mismatch automake 1.18.1 vs 1.16.5) |
 | **Checksums recomputados** (foot 1.22.3/1.25.0: codeberg regeneró el gzip, contenido byte-idéntico) | ✅ RESUELTO | Commit `8f645d5`; sustitución en la FASE 1 de `normalize-legacy-builds.sh` |
 | **`termux-am` transitiva en listas DEPENDS** (Gradle 4.1 vs Java 17 del runner) | ✅ RESUELTO | Commit `ac6ae52` (sed de tokens en las listas; NO vaciar `TERMUX_PKG_DEPENDS=""`) |
@@ -176,7 +176,7 @@ Al compilar un commit antiguo, la secuencia de fallos es:
 - Los **patches de 2018** usan rutas `../pkg-ver/...` en los headers (generados con `diff -u -r`).
 - **GNU patch** tiene un fallback que resuelve las rutas antiguas; **BusyBox patch no** lo tiene.
 - **Fix**: patch 007 normaliza `--- ../pkg-ver/` → `--- ./` (y `+++`), y además **quita `--silent`** para poder ver el error real de GNU patch.
-- El parche 007 incluía `DEBUG` (imprime `DEBUG VARS`, `SED EXIT`, `SED STDERR`, `PATCH EXIT`, `PATCH STDERR`) para diagnosticar el exit 2 en CI. **Resuelto**: la causa del exit 2 era el `set -euo pipefail` + pipelines sobre archivos inexistentes; los parches 007–009 son REFERENCIA y su debug queda pendiente de limpiar.
+- El parche 007 incluía `DEBUG` (imprime `DEBUG VARS`, `SED EXIT`, `SED STDERR`, `PATCH EXIT`, `PATCH STDERR`) para diagnosticar el exit 2 en CI. **Resuelto**: la causa del exit 2 era el `set -euo pipefail` + pipelines sobre archivos inexistentes; los parches 007–009 son REFERENCIA y su debug se **limpió el 2026-08-10** (007/009 conservan solo la parte funcional; 008, 100% marcadores, marcado DESCARTADO).
 
 ## Sed completo del `termux_step_patch_package.sh` (11 reglas)
 

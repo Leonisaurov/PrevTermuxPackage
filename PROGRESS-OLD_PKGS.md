@@ -78,7 +78,8 @@
 - [x] ~~**SIGUIENTE GRAN OBJETIVO**: `zig` 0.15.2 y 0.16.0 **SUBVERSIONADO**~~ — **COMPLETADO** el 2026-08-09 (runs `31303490256` y `31303490320` verdes; ver sección 6).
 - [ ] **Re-validar `bash@8ca9404`** en CI (FASE 2c util-linux ya commiteada en `ed86935` → relanzar CI) → desbloquear `bat@2f2adec`.
 - [ ] Regresión `bat@2f2adec` (depende de la re-validación de `bash@8ca9404`).
-- [ ] Deuda: limpiar debug de parches 007–009; actualizar `docs/build-system-internals.md`; `escape` en `cmd_status`; `--limit` en releases.
+- [x] ~~Deuda: limpiar debug de parches 007–009~~ — ✅ **COMPLETADO** el 2026-08-10 (007/009 solo parte funcional, 008 DESCARTADO, 011/015 contextos limpios).
+- [ ] Deuda: `escape` en `cmd_status`; `--limit` en releases; actualizar `docs/build-system-internals.md`.
 - [ ] Ampliar la lista del shim `automake-N.N` (1.17/1.12) cuando aparezcan.
 
 ## 6. 2026-08-09 — Rediseño CLI prev-termux + zig subversionado verde
@@ -144,6 +145,6 @@
 - [x] ~~Re-validar `bash@8ca9404` (5.3)~~ — ✅ **COMPLETADO** (run `31425439292` verde).
 - [x] ~~Regresión `bat@2f2adec`~~ — ✅ **COMPLETADO** (run `31431231753` verde).
 - [ ] Deuda: **sanear `:` en nombres del pool** del lado consumidor (`store-lib.sh` / `prev-termux fetch`).
-- [ ] Deuda: limpiar debug de parches 007–009.
+- [x] ~~Deuda: limpiar debug de parches 007–009~~ — ✅ **COMPLETADO** el 2026-08-10.
 - [ ] Versionar suite 28/28 en `tests/`.
 - [ ] Validar más paquetes históricos (2018–2023) para ampliar cobertura.

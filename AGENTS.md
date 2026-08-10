@@ -16,7 +16,7 @@ Compila **versiones históricas** de paquetes de `termux/termux-packages` (commi
 - `which@1fcb6e8` ✅, `bash@e4f2135` ✅, `tar@8ca9404` ✅.
 - **`zig` 0.15.2 y 0.16.0 subversionado VERDE** (runs `31303490256` / `31303490320`; `jobs=subversioned`, `heavy=true`). `TERMUX_PREFIX_OVERRIDE` re-deriva el prefix ANTES de sourcear el `build.sh` → el wrapper proot (0.15.2) y los diffs `@TERMUX_PREFIX@` (0.16.0) quedan versionados sin parches manuales.
 - **Pendiente**: `bash@8ca9404` (bash 5.3; FASE 2c util-linux commiteada en `ed86935` → relanzar CI) y `bat@2f2adec` (regresión, depende de bash).
-- **SIGUIENTE PASO**: relanzar CI de `bash@8ca9404` (`gita notify`) para desbloquear `bat@2f2adec`; cerrar deuda: limpiar debug de parches 007–009 y pruebas de regresión (bat/which/zig).
+- **SIGUIENTE PASO**: relanzar CI de `bash@8ca9404` (`gita notify`) para desbloquear `bat@2f2adec`; pruebas de regresión (bat/which/zig).
 
 ## Reglas de entorno CRÍTICAS
 
