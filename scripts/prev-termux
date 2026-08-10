@@ -3,7 +3,7 @@
 # prev-termux — CLI for building old Termux package versions
 # via GitHub Actions releases.
 #
-# Dependencies: git, fzf, gh (GitHub CLI), jq
+# Dependencies: git, gh (GitHub CLI), jq (fzf es opcional; sin él se usa un menú numerado)
 # ============================================================
 set -euo pipefail
 
@@ -72,7 +72,9 @@ die()   { err "$*"; exit 1; }
 
 check_deps() {
     local missing=()
-    for cmd in git fzf gh jq; do
+    # fzf es opcional: cada subcomando que lo use cae al menú numerado
+    # (_select_line) si no está instalado. Solo se exigen los imprescindibles.
+    for cmd in git gh jq; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
 
@@ -99,6 +101,149 @@ Install them with:
 }
 
 # ─── subinstall helpers ─────────────────────────────────────────────────────────
+
+# ─── _parse_artifact_name ─────────────────────────────────────────────────────
+# Parsea {pkg}|{version} del nombre de un artifact. Acepta los dos estilos de
+# nombre y ambos formatos de paquete:
+#   release/estándar:  bat-0.7.1-0-aarch64.pkg.tar.xz      → bat|0.7.1
+#   pool (store):      bat_0.7.1_aarch64.pkg.tar.xz        → bat|0.7.1
+#                      bat_0.7.1_aarch64_subversioned.pkg.tar.xz → bat|0.7.1
+#                      libpng16_1.6.43_all_subversioned.pkg.tar.xz → libpng16|1.6.43
+#   .deb:              bash_5.1.16_aarch64_subversioned.deb → bash|5.1.16
+# El sufijo subversioned se elimina ANTES de parsear y el separador pkg/ver
+# puede ser '-' (release) o '_' (pool). Devuelve "pkg|version" por stdout;
+# vacío (y exit 1) si no se puede parsear.
+_parse_artifact_name() {
+    local filename="$1"
+    local base pkg version arch
+
+    base="${filename%.pkg.tar.*}"
+    if [[ "$base" == "$filename" ]]; then
+        base="${filename%.deb}"
+    fi
+    # Ni .pkg.tar.* ni .deb
+    [[ "$base" == "$filename" ]] && return 1
+
+    # Sufijo subversioned (pool: _subversioned; release: -subversioned)
+    base="${base%_subversioned}"
+    base="${base%-subversioned}"
+
+    # Arquitectura final (con separador '-' o '_')
+    for arch in aarch64 arm i686 x86_64 all; do
+        base="${base%-${arch}}"
+        base="${base%_${arch}}"
+    done
+
+    # Revisión final solo en estilo release: {pkg}-{ver}-{rev}
+    if [[ "$base" =~ -[0-9]+$ ]]; then
+        base="${base%-[0-9]*}"
+    fi
+
+    # base = {pkg}[-_]{ver}; ver es el último segmento que empieza con dígito.
+    version="$(echo "$base" | sed -E 's/^.*[-_]([0-9][^-_]*)$/\1/')"
+    pkg="$(echo "$base" | sed -E 's/^(.*)[-_][0-9][^-_]*$/\1/')"
+
+    if [[ -z "$version" || -z "$pkg" || "$pkg" == "$base" ]]; then
+        return 1
+    fi
+    printf '%s|%s\n' "$pkg" "$version"
+}
+
+# ─── _escape_regex ─────────────────────────────────────────────────────────────
+# Escapa meta-caracteres de ERE para usar un nombre de paquete (p.ej. 'libc++')
+# como texto literal dentro de una expresión sed -E.
+_escape_regex() {
+    printf '%s' "$1" | sed 's/[][\\^$.*+?(){}|]/\\&/g'
+}
+
+# ─── _artifact_version_for_pkg ────────────────────────────────────────────────
+# Cross-check de paquete para descargas de release (subinstall/install).
+# Determina si el artifact descargado pertenece al paquete pedido, parseando
+# desde la IZQUIERDA (con $pkg como ancla) en vez de desde la derecha. El
+# parseo desde la derecha (usado por _parse_artifact_name para el flujo local)
+# rompe versiones con guiones: libedit-20210216-3.1-0-aarch64.pkg.tar.xz
+# parsearía como pkg=libedit-20210216 (falso negativo). Aquí se valida:
+#   1. Quitar sufijos conocidos por la derecha: .pkg.tar.xz/.deb,
+#      -subversioned/_subversioned, -{arch}/_{arch} y -{revisión numérica}.
+#   2. El resto debe empezar por "${pkg}" seguido de '-' o '_'; si no, el
+#      artifact es de OTRO paquete (p.ej. python-numpy al pedir python).
+#   3. La versión (resto tras el prefijo) debe empezar por dígito: un resto
+#      como "numpy-1.26.4" no es una versión de 'python' sino otro paquete.
+#      (Supuesto documentado: TERMUX_PKG_VERSION del rango 2018-2023 empieza
+#      siempre por dígito; p.ej. 20210216-3.1, 1.3-20260107, 0.24-1.)
+# Imprime la versión extraída por stdout (exit 0) si corresponde al paquete;
+# nada (exit 1) si no corresponde. $pkg se usa como texto literal (no regex),
+# así que nombres con '+' (libc++) funcionan sin escape.
+_artifact_version_for_pkg() {
+    local filename="$1"
+    local pkg="$2"
+    local base rest arch
+
+    base="${filename%.pkg.tar.*}"
+    if [[ "$base" == "$filename" ]]; then
+        base="${filename%.deb}"
+    fi
+    # Ni .pkg.tar.* ni .deb
+    [[ "$base" == "$filename" ]] && return 1
+
+    # Sufijo subversioned (pool: _subversioned; release: -subversioned)
+    base="${base%_subversioned}"
+    base="${base%-subversioned}"
+
+    # Arquitectura final (con separador '-' o '_')
+    for arch in aarch64 arm i686 x86_64 all; do
+        base="${base%-${arch}}"
+        base="${base%_${arch}}"
+    done
+
+    # Revisión final solo en estilo release: {pkg}-{ver}-{rev}
+    if [[ "$base" =~ -[0-9]+$ ]]; then
+        base="${base%-[0-9]*}"
+    fi
+
+    # El resto debe empezar por ${pkg} seguido de '-' o '_'
+    case "$base" in
+        "${pkg}"-*|"${pkg}"_*) ;;
+        *) return 1 ;;
+    esac
+
+    rest="${base#${pkg}-}"
+    rest="${rest#${pkg}_}"
+
+    # La versión debe parecer una versión: empieza por dígito. Un resto como
+    # "numpy-1.26.4" (pkg pedido 'python') es una colisión de prefijo.
+    case "$rest" in
+        [0-9]*) printf '%s\n' "$rest" ;;
+        *) return 1 ;;
+    esac
+}
+
+# ─── _subinstall_extract ───────────────────────────────────────────────────────
+# Extrae un artifact a ~/.local/opt/<pkg>-<version>/. Acepta pkg/version
+# EXPLÍCITOS (opcionales): el flujo GitHub de cmd_subinstall los pasa ya
+# verificados por el cross-check (_artifact_version_for_pkg) para no re-parsear
+# el nombre del artifact (que truncaría versiones con guiones como
+# libedit-20210216-3.1 → pkg 'libedit-20210216'). Si no se pasan (flujo local),
+# se parsean del nombre del archivo.
+_subinstall_extract() {
+    local artifact="$1"
+    local pkg="${2:-}" version="${3:-}"
+    local parsed base_name
+    base_name="$(basename "$artifact")"
+
+    if [[ -z "$pkg" || -z "$version" ]]; then
+        if parsed="$(_parse_artifact_name "$base_name")"; then
+            pkg="${parsed%%|*}"
+            version="${parsed#*|}"
+        else
+            warn "No se pudo parsear nombre/versión de '${base_name}'; usando fallback."
+            pkg="${base_name%.pkg.tar.*}"
+            version="unknown"
+        fi
+    fi
+
+    extract_artifact "$artifact" "$pkg" "$version"
+}
 
 # ─── extract_artifact ──────────────────────────────────────────────────────────
 # Extrae un .pkg.tar.xz a ~/.local/opt/<pkg>-<version>/ con symlinks para cada
@@ -230,8 +375,21 @@ cmd_list() {
     info "Discovering versions for '${package}'..."
     echo ""
 
-    local selected
-    selected="$(fzf_select "$package" "$refresh")" || die "Version selection cancelled or failed"
+    local selected=""
+    if command -v fzf &>/dev/null; then
+        selected="$(fzf_select "$package" "$refresh")" || die "Version selection cancelled or failed"
+    else
+        warn "fzf no está instalado; usando menú numerado..."
+        local versions_txt=""
+        versions_txt="$(get_cached_versions "$package" "$refresh")" || \
+            die "No se pudieron obtener versiones de '${package}' (revisa la caché o instala fzf)."
+        if [[ -z "$versions_txt" ]]; then
+            die "No versions found for '${package}'"
+        fi
+        local -a versions=()
+        mapfile -t versions <<< "$versions_txt"
+        selected="$(_select_line "Selecciona versión de ${package}: " "${versions[@]}")" || die "Version selection cancelled or failed"
+    fi
     [[ -z "$selected" ]] && die "No version selected"
 
     # Parse: version|commit_full|date|commit_short
@@ -312,7 +470,23 @@ cmd_build() {
         echo ""
 
         local selected
-        selected="$(fzf_select "$package" "$refresh")" || die "Version selection cancelled or failed"
+        if command -v fzf &>/dev/null; then
+            selected="$(fzf_select "$package" "$refresh")" || die "Version selection cancelled or failed"
+        else
+            # fzf es opcional: sin él se replica el enfoque de cmd_list y se cae
+            # al menú numerado (_select_line) con las versiones cacheadas, en el
+            # mismo formato version|sha|date|short_sha que produce fzf_select.
+            warn "fzf no está instalado; usando menú numerado..."
+            local versions_txt=""
+            versions_txt="$(get_cached_versions "$package" "$refresh")" || \
+                die "No se pudieron obtener versiones de '${package}' (revisa la caché o instala fzf)."
+            if [[ -z "$versions_txt" ]]; then
+                die "No versions found for '${package}'"
+            fi
+            local -a versions=()
+            mapfile -t versions <<< "$versions_txt"
+            selected="$(_select_line "Selecciona versión de ${package}: " "${versions[@]}")" || die "Version selection cancelled or failed"
+        fi
         [[ -z "$selected" ]] && die "No version selected"
 
         IFS='|' read -r version sha date short_sha <<< "$selected"
@@ -345,6 +519,41 @@ cmd_build() {
     echo -e "  ${BOLD}Tag${NC}       ${tag}"
     echo ""
 
+    # ── Detección de runs previos del workflow ────────────────────────────────
+    # Consulta los runs que coincidan con "{package} @ {sha7}" (run-name del
+    # workflow: "📦 <pkg> @ <sha>"). Evita relanzar a ciegas una build que ya
+    # está en curso o que ya terminó con éxito para este commit. Cada caso
+    # pregunta con read -p (el prompt va a stderr); una respuesta distinta de
+    # y/Y aborta sin lanzar nada.
+    local raw_runs=""
+    raw_runs="$(gh run list --workflow "$WORKFLOW_FILE" -R "$RELEASE_REPO" \
+        --limit 100 --json databaseId,displayTitle,status,conclusion,event 2>/dev/null || true)"
+
+    local run_id_curso="" run_id_exitoso=""
+    if [[ -n "$raw_runs" && "$raw_runs" != "[]" ]]; then
+        run_id_curso="$(printf '%s' "$raw_runs" | jq -r --arg t "${package} @ ${short_sha}" \
+            '.[] | select(.displayTitle | contains($t)) | select(.status == "in_progress" or .status == "queued") | .databaseId' 2>/dev/null | head -1 || true)"
+        run_id_exitoso="$(printf '%s' "$raw_runs" | jq -r --arg t "${package} @ ${short_sha}" \
+            '.[] | select(.displayTitle | contains($t)) | select(.conclusion == "success") | .databaseId' 2>/dev/null | head -1 || true)"
+    fi
+
+    local answer=""
+    local prompt_shown=false
+    if [[ -n "$run_id_curso" ]]; then
+        prompt_shown=true
+        read -r -p "$(warn "Hay una build EN CURSO de ${package} @ ${short_sha} (run #${run_id_curso}). ¿Relanzar de todos modos? [y/N] ")" answer || answer="n"
+    elif [[ -n "$run_id_exitoso" ]]; then
+        prompt_shown=true
+        read -r -p "$(warn "Ya existe una build EXITOSA de ${package} @ ${short_sha} (run #${run_id_exitoso}). ¿Relanzar de todos modos? [y/N] ")" answer || answer="n"
+    fi
+    # Solo y/Y relanzan la build. Enter (respuesta vacía) o cualquier otra
+    # respuesta aborta: el prompt promete [y/N] con default No. Si no hubo run
+    # previo no hay pregunta (prompt_shown=false) y se continúa con el build.
+    if [[ "$prompt_shown" == "true" && ( -z "$answer" || ( "$answer" != "y" && "$answer" != "Y" ) ) ]]; then
+        info "Build no relanzada. Saliendo."
+        exit 0
+    fi
+
     # ── Check / Download / Trigger ────────────────────────────────────────────
 
     local do_download=false
@@ -371,9 +580,9 @@ cmd_build() {
             do_download=true
         else
             if [[ "$subversioned" == "true" ]]; then
-                info "No subversioned release found. Triggering build workflow (builds normal + subversioned)..."
+                info "No subversioned release found. Triggering build workflow (job: subversioned)..."
             else
-                info "No existing release found. Triggering build workflow..."
+                info "No existing release found. Triggering build workflow (jobs: normal + subversioned)..."
             fi
             echo ""
 
@@ -384,6 +593,9 @@ cmd_build() {
             local gh_flags=()
             if [[ "$zram" == "true" ]]; then
                 gh_flags+=(-f heavy=true)
+            fi
+            if [[ "$subversioned" == "true" ]]; then
+                gh_flags+=(-f jobs=subversioned)
             fi
 
             local workflow_output
@@ -410,7 +622,11 @@ cmd_build() {
                 --json databaseId --jq '.[0].databaseId' --limit 1 2>/dev/null)" || true
 
             if [[ -n "$run_id" ]]; then
-                ok "Workflow started: #${run_id}"
+                if [[ "$subversioned" == "true" ]]; then
+                    ok "Workflow started: #${run_id} (modo: subversioned)"
+                else
+                    ok "Workflow started: #${run_id} (modo: normal + subversioned)"
+                fi
                 echo ""
                 echo -e "  ${BOLD}Monitor:${NC}  gh run watch ${run_id} -R ${RELEASE_REPO}"
                 echo -e "  ${BOLD}Status:${NC}   prev-termux status"
@@ -469,7 +685,8 @@ cmd_build() {
 # Extracts a .pkg.tar.xz to ~/.local/opt/<pkg>-<version>/ with versioned
 # symlinks in ~/.local/bin/<bin>-<version>.
 #
-# If no file is provided, shows all artifacts in output/ via fzf.
+# If no file is provided, shows all artifacts in output/ via fzf
+# (or a numbered menu if fzf is not installed).
 # NEVER interacts with GitHub — works only with local files.
 #
 cmd_subinstall() {
@@ -478,45 +695,34 @@ cmd_subinstall() {
 
     # Si pasaron un argumento
     if [[ -n "${1:-}" ]]; then
-        # Si es un archivo existente, usarlo directo
+        # Si es un archivo existente, usarlo directo (flujo local)
         if [[ -f "$1" ]]; then
             target_file="$1"
         else
-            # Es un nombre de paquete
+            # Es un nombre de paquete → flujo GitHub (descarga de la release)
             pkg_filter="$1"
         fi
     fi
 
-    # Si no es archivo directo, buscar en output/
-    if [[ -z "$target_file" ]]; then
+    # ── Flujo local: archivo directo ──────────────────────────────────────────
+    if [[ -n "$target_file" ]]; then
+        _subinstall_extract "$target_file"
+        return 0
+    fi
+
+    # ── Flujo local: selección en output/ vía fzf (sin argumento) ─────────────
+    if [[ -z "$pkg_filter" ]]; then
         local output_dir="${PWD}/output"
         if [[ ! -d "$output_dir" ]]; then
-            die "No output/ directory found. Build a package first: ./scripts/prev-termux build <package>"
-        fi
-
-        # Construir patrón de búsqueda
-        local search_pattern
-        if [[ -n "$pkg_filter" ]]; then
-            search_pattern="${output_dir}/${pkg_filter}-*.pkg.tar.*"
-        else
-            search_pattern="${output_dir}/*.pkg.tar.*"
+            die "No output/ directory found. Use: ./scripts/prev-termux subinstall <package>"
         fi
 
         shopt -s nullglob
-        local files=($search_pattern)
+        local files=("${output_dir}/"*.pkg.tar.*)
         shopt -u nullglob
 
         if [[ ${#files[@]} -eq 0 ]]; then
-            if [[ -n "$pkg_filter" ]]; then
-                die "No .pkg.tar.* files found for '${pkg_filter}' in ${output_dir}. Build it first: ./scripts/prev-termux build ${pkg_filter}"
-            else
-                die "No .pkg.tar.* files found in ${output_dir}. Build a package first: ./scripts/prev-termux build <package>"
-            fi
-        fi
-
-        # Siempre mostrar en fzf para seleccionar
-        if ! command -v fzf &>/dev/null; then
-            die "fzf is not installed. Install with: pkg install fzf"
+            die "No .pkg.tar.* files found in ${output_dir}. Use: ./scripts/prev-termux subinstall <package>"
         fi
 
         # Construir mapping nombre_corto → path_completo + symlinks para preview
@@ -537,54 +743,597 @@ cmd_subinstall() {
             ln -sf "$f" "${preview_dir}/${short_name}" 2>/dev/null || true
         done
 
-        # Mostrar solo nombres cortos en fzf con preview via symlinks
-        local selected_name
-        selected_name="$(printf '%s\n' "${short_names[@]}" | fzf \
-            --prompt='Select package to install: ' \
-            --preview "tar -tf '${preview_dir}/{}' 2>/dev/null | head -20" \
-            --preview-window='right:60%' \
-            2>/dev/null)" || die "No file selected"
+        # Mostrar solo nombres cortos (fzf con preview si está disponible;
+        # si no, menú numerado con _select_line)
+        local selected_name=""
+        if command -v fzf &>/dev/null; then
+            selected_name="$(printf '%s\n' "${short_names[@]}" | fzf \
+                --prompt='Select package to install: ' \
+                --preview "tar -tf '${preview_dir}/{}' 2>/dev/null | head -20" \
+                --preview-window='right:60%' \
+                2>/dev/null)" || die "No file selected"
+        else
+            warn "fzf no está instalado; usando menú numerado..."
+            selected_name="$(_select_line "Selecciona paquete a instalar: " "${short_names[@]}")" || die "No file selected"
+        fi
 
-        # Obtener path completo desde el mapping
         target_file="${name_to_path[$selected_name]}"
 
         # Limpiar directorio temporal
         rm -rf "$preview_dir"
+
+        _subinstall_extract "$target_file"
+        return 0
     fi
 
-    # Extraer nombre del paquete y versión del nombre del archivo.
-    # Formato esperado: <pkg>-<version>-<revision>-<arch>.pkg.tar.xz
-    # Ej: bat-0.24.0-0-aarch64.pkg.tar.xz
-    # Parseo desde el FINAL (robusto frente a dígitos en el nombre del paquete):
-    #   libpng16-1.6.43-0-aarch64 → libpng16 / 1.6.43
-    #   zig-0.15.2-0-aarch64      → zig / 0.15.2
-    local pkg version base filename
-    filename="$(basename "$target_file")"
-    base="${filename%.pkg.tar.*}"                          # {pkg}-{ver}-{rev}-{arch}
-    # 1. Quitar la arquitectura final
-    case "$base" in
-        *-aarch64) base="${base%-aarch64}" ;;
-        *-arm)     base="${base%-arm}" ;;
-        *-i686)    base="${base%-i686}" ;;
-        *-x86_64)  base="${base%-x86_64}" ;;
-        *-all)     base="${base%-all}" ;;
-    esac
-    # 2. Quitar la revisión final (dígitos): {pkg}-{ver}-{rev} → {pkg}-{ver}
-    if [[ "$base" =~ -[0-9]+$ ]]; then
-        base="${base%-[0-9]*}"
-    fi
-    # 3. Ahora base = {pkg}-{ver}
-    pkg="$(echo "$base" | sed -E 's/-[0-9][^-]*$//')"
-    version="$(echo "$base" | sed -E 's/^.*-([0-9][^-]*)$/\1/')"
-
-    if [[ -z "$pkg" || -z "$version" || "$version" == "$base" ]]; then
-        warn "Could not parse package name/version from filename: ${filename}"
-        pkg="${filename%.pkg.tar.*}"
-        version="unknown"
+    # ── Flujo GitHub: descargar la release del paquete ────────────────────────
+    # Lista los releases del repo y filtra tags con forma {pkg}-{ver}-{sha7}
+    # (normal) y {pkg}-{ver}-{sha7}-subversioned. {ver} puede contener guiones;
+    # el sha7 son exactamente 7 hex al final del tag. Filtro con jq sobre
+    # tagName (no con parser de filenames).
+    info "Buscando releases de '${pkg_filter}' en ${RELEASE_REPO}..."
+    local releases_json=""
+    releases_json="$(gh release list -R "$RELEASE_REPO" --limit 200 \
+        --json tagName,createdAt 2>/dev/null || true)"
+    if [[ -z "$releases_json" || "$releases_json" == "[]" ]]; then
+        die "No se pudo listar releases de ${RELEASE_REPO} (o no hay releases)."
     fi
 
-    # Extraer artifact
-    extract_artifact "$target_file" "$pkg" "$version"
+    local groups="" pkg_re=""
+    # $pkg_re = nombre del paquete escapado para usarlo como texto LITERAL en la
+    # regex de test() (jq usa ERE/POSIX, mismo escape que sed): 'libc++' →
+    # 'libc\+\+'; sin escapar, los '+' actuarían como cuantificadores y el tag
+    # 'libc++-...' no matchearía. startswith() sigue usando el nombre crudo
+    # (comparación literal de cadena, sin regex).
+    pkg_re="$(_escape_regex "$pkg_filter")"
+    groups="$(printf '%s' "$releases_json" | jq -c --arg p "$pkg_filter" --arg pr "$pkg_re" '
+        {
+          normal: [.[] | select(.tagName | startswith($p + "-")) |
+                     select(.tagName | test("^" + $pr + "-.+-[0-9a-f]{7}$")) |
+                     select(.tagName | test("-subversioned$") | not)],
+          sub:    [.[] | select(.tagName | startswith($p + "-")) |
+                     select(.tagName | test("^" + $pr + "-.+-[0-9a-f]{7}-subversioned$"))]
+        }' 2>/dev/null || echo '{"normal":[],"sub":[]}')"
+
+    # Candidatos de cada grupo ordenados de más reciente a más antiguo
+    # (createdAt desc). Se usan para el fallback de colisión de prefijos.
+    local normal_tags="" sub_tags=""
+    normal_tags="$(printf '%s' "$groups" | jq -r '.normal | sort_by(.createdAt) | reverse | .[].tagName' 2>/dev/null || true)"
+    sub_tags="$(printf '%s' "$groups" | jq -r '.sub | sort_by(.createdAt) | reverse | .[].tagName' 2>/dev/null || true)"
+
+    # Más reciente de cada grupo (createdAt máximo)
+    local normal_latest sub_latest
+    normal_latest="$(printf '%s' "$groups" | jq -c '.normal | sort_by(.createdAt) | last // empty' 2>/dev/null || true)"
+    sub_latest="$(printf '%s' "$groups" | jq -c '.sub | sort_by(.createdAt) | last // empty' 2>/dev/null || true)"
+
+    local normal_tag="" normal_ver="" normal_date=""
+    local sub_tag="" sub_ver="" sub_date=""
+    if [[ -n "$normal_latest" ]]; then
+        normal_tag="$(printf '%s' "$normal_latest" | jq -r '.tagName // ""')"
+        normal_date="$(printf '%s' "$normal_latest" | jq -r '.createdAt // ""')"
+        normal_ver="$(printf '%s' "$normal_tag" | sed -E "s/^${pkg_re}-(.*)-[0-9a-f]{7}$/\1/")"
+    fi
+    if [[ -n "$sub_latest" ]]; then
+        sub_tag="$(printf '%s' "$sub_latest" | jq -r '.tagName // ""')"
+        sub_date="$(printf '%s' "$sub_latest" | jq -r '.createdAt // ""')"
+        sub_ver="$(printf '%s' "$sub_tag" | sed -E "s/^${pkg_re}-(.*)-[0-9a-f]{7}-subversioned$/\1/")"
+    fi
+
+    # ── Diálogo de selección ──────────────────────────────────────────────────
+    local choice=""
+    if [[ -n "$normal_latest" && -n "$sub_latest" ]]; then
+        echo ""
+        info "Releases disponibles de '${pkg_filter}':"
+        echo "  1) Subversion  ${sub_ver}  (${sub_date:0:10})  → ${sub_tag}"
+        echo "  2) Normal      ${normal_ver}  (${normal_date:0:10})  → ${normal_tag}"
+        echo ""
+        read -r -p "Selecciona 1 o 2 [2]: " choice || choice="2"
+        case "$choice" in
+            1) choice="subversioned" ;;
+            2|"") choice="normal" ;;
+            *) die "Selección inválida: '${choice}'. Saliendo." ;;
+        esac
+    elif [[ -n "$normal_latest" ]]; then
+        echo ""
+        warn "Este paquete aún no se ha compilado subversionado."
+        warn "Solo existe la release normal: ${normal_tag} (${normal_date:0:10})"
+        read -r -p "$(warn "¿Descargar la release normal de todos modos? [y/N] ")" choice || choice="n"
+        if [[ "$choice" != "y" && "$choice" != "Y" ]]; then
+            info "Descarga cancelada. Saliendo."
+            exit 0
+        fi
+        choice="normal"
+    elif [[ -n "$sub_latest" ]]; then
+        echo ""
+        warn "Solo existe la release subversioned: ${sub_tag} (${sub_date:0:10})"
+        warn "No hay release normal para este paquete."
+        read -r -p "$(warn "¿Descargar la release subversioned de todos modos? [y/N] ")" choice || choice="n"
+        if [[ "$choice" != "y" && "$choice" != "Y" ]]; then
+            info "Descarga cancelada. Saliendo."
+            exit 0
+        fi
+        choice="subversioned"
+    else
+        die "No se encontraron releases de '${pkg_filter}' en ${RELEASE_REPO}. Compílalo primero: ./scripts/prev-termux build ${pkg_filter}"
+    fi
+
+    # ── Descarga del .pkg.tar.xz a $TMPDIR con cross-check de paquete ────────
+    # (nunca output/; --clobber, sin --skip-existing: así el artifact descargado
+    # es SIEMPRE el de la release elegida, normal o subversioned)
+    #
+    # Colisión de prefijos: el filtro jq (startswith($p + "-") + regex
+    # ^$p-.+-[0-9a-f]{7}$) matchea también paquetes cuyo nombre empieza por el
+    # pedido + guión: 'python' matchea python-numpy-*, python-pillow-*. Como se
+    # elige por createdAt máximo, el tag más reciente del prefijo podría NO ser
+    # el paquete pedido. Defensa (Opción A): se descarga el artifact y se cruza
+    # con _artifact_version_for_pkg (validación desde la izquierda); si ningún
+    # artifact pertenece a $pkg_filter, se descarta el tag y se prueba el
+    # siguiente candidato más reciente.
+    local -a candidate_tags=()
+    if [[ "$choice" == "normal" ]]; then
+        mapfile -t candidate_tags <<< "$normal_tags"
+    else
+        mapfile -t candidate_tags <<< "$sub_tags"
+    fi
+
+    local found_tag="" tmpdir="" candidate=""
+    local -a good_artifacts=()
+    for candidate in "${candidate_tags[@]}"; do
+        [[ -z "$candidate" ]] && continue
+        tmpdir="$(mktemp -d "${TMPDIR}/prev-termux-sub.XXXXXX")"
+        info "Descargando artifacts de '${candidate}' a ${tmpdir}/..."
+        if ! gh release download "$candidate" -R "$RELEASE_REPO" \
+                --pattern "*.pkg.tar.xz" --dir "$tmpdir" --clobber >/dev/null 2>&1; then
+            rm -rf "$tmpdir"
+            warn "Fallo al descargar artifacts de la release '${candidate}'; probando siguiente candidato."
+            continue
+        fi
+
+        shopt -s nullglob
+        local artifacts=("$tmpdir"/*.pkg.tar.xz)
+        shopt -u nullglob
+        if [[ ${#artifacts[@]} -eq 0 ]]; then
+            rm -rf "$tmpdir"
+            warn "La release '${candidate}' no contiene artifacts .pkg.tar.xz; probando siguiente candidato."
+            continue
+        fi
+
+        # Cross-check: quedarse solo con artifacts que pertenecen al paquete
+        # pedido (validación desde la izquierda con $pkg como ancla; tolera
+        # versiones con guiones como libedit-20210216-3.1). Además se compara
+        # la versión del artifact contra la versión del TAG (ver_tag, extraída
+        # tolerando guiones) para descartar artifacts de la versión equivocada.
+        # Si ninguno pertenece, la release es de OTRO paquete → descartarla.
+        # $pkg_re ya está definido (función): se usa en ver_tag para tratar el
+        # nombre del paquete como texto literal (libc++ → libc\+\+).
+        local ver_tag=""
+        ver_tag="$(printf '%s' "$candidate" | sed -E "s/^${pkg_re}-(.*)-[0-9a-f]{7}(-subversioned)?$/\1/" || true)"
+
+        # matched guarda "path|version": la versión verificada por el cross-check
+        # se reutiliza al extraer (evita re-parsear el nombre, que truncaría
+        # libedit-20210216-3.1 → pkg libedit-20210216).
+        local -a matched=()
+        local a="" artifact_ver="" a_base=""
+        for a in "${artifacts[@]}"; do
+            a_base="$(basename "$a")"
+            if artifact_ver="$(_artifact_version_for_pkg "$a_base" "$pkg_filter")"; then
+                if [[ -n "$ver_tag" && "$artifact_ver" != "$ver_tag" ]]; then
+                    warn "Artifact '${a_base}' es de '${pkg_filter}' pero su versión '${artifact_ver}' no coincide con el tag '${ver_tag}'; descartando."
+                else
+                    matched+=("${a}|${artifact_ver}")
+                fi
+            else
+                case "$a_base" in
+                    "${pkg_filter}"-*|"${pkg_filter}"_*)
+                        # Comparte prefijo con el paquete pedido pero no es él:
+                        # colisión real (python vs python-numpy) → sospecha.
+                        warn "Artifact '${a_base}' comparte prefijo con '${pkg_filter}' (posible colisión real: python vs python-numpy); descartando."
+                        ;;
+                    *)
+                        # No comparte prefijo: es una dependencia normal del
+                        # paquete (cada release sube los artifacts de todas sus
+                        # deps) → rechazo esperado, sin alarma.
+                        info "Artifact '${a_base}' no pertenece a '${pkg_filter}' (dependencia normal); ignorando."
+                        ;;
+                esac
+            fi
+        done
+
+        if [[ ${#matched[@]} -eq 0 ]]; then
+            rm -rf "$tmpdir"
+            warn "La release '${candidate}' no contiene artifacts de '${pkg_filter}'; probando siguiente candidato."
+            continue
+        fi
+
+        found_tag="$candidate"
+        good_artifacts=("${matched[@]}")
+        break
+    done
+
+    if [[ -z "$found_tag" ]]; then
+        die "No se encontró ninguna release de '${pkg_filter}' cuyos artifacts sean realmente de ese paquete (posible colisión de prefijo: python-numpy, python-pillow...). Compílalo primero: ./scripts/prev-termux build ${pkg_filter}"
+    fi
+
+    # ── Extraer cada artifact verificado ──────────────────────────────────────
+    # Se pasa el pkg pedido + la versión verificada por el cross-check (no se
+    # re-parsea el nombre: _parse_artifact_name truncaría libedit-20210216-3.1
+    # → pkg 'libedit-20210216', creando symlinks <bin>-3.1 incorrectos).
+    local f
+    for f in "${good_artifacts[@]}"; do
+        _subinstall_extract "${f%%|*}" "$pkg_filter" "${f#*|}"
+    done
+    rm -rf "$tmpdir"
+    ok "Instalación completada desde '${found_tag}'."
+}
+
+
+# ─── _select_line ───────────────────────────────────────────────────────────────
+# Muestra las opciones recibidas COMO ARGUMENTOS y devuelve por stdout la
+# seleccionada. Usa fzf si está disponible; si no, cae a un menú numerado con read.
+# El menú numerado se imprime por stderr (no ensucia stdout) y la lectura se hace
+# desde /dev/tty cuando stdin es un terminal, o desde stdin en caso de
+# automatización/pipe. NO debe invocarse vía pipe (`printf ... | _select_line`)
+# porque mapfile drena stdin hasta EOF y el read posterior recibe EOF al instante.
+# Devuelve vacío (exit 1) si no hay opciones o la selección es inválida/cancelada.
+_select_line() {
+    local prompt="${1:-Select: }"
+    shift || true
+    local -a opts=("$@")
+    if [[ ${#opts[@]} -eq 0 ]]; then
+        return 1
+    fi
+
+    if command -v fzf &>/dev/null; then
+        printf '%s\n' "${opts[@]}" | fzf --prompt="$prompt" 2>/dev/null
+        return $?
+    fi
+
+    # Fallback: menú numerado sin fzf
+    local i=0 o=""
+    printf '%s\n' "Opciones disponibles:" >&2
+    for o in "${opts[@]}"; do
+        i=$((i + 1))
+        printf '  %d) %s\n' "$i" "$o" >&2
+    done
+    printf '%s' "$prompt" >&2
+
+    local choice=""
+    if [[ -t 0 ]] && [[ -r /dev/tty ]]; then
+        read -r choice </dev/tty || return 1
+    else
+        read -r choice || return 1
+    fi
+    if [[ ! "$choice" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+    if (( choice < 1 || choice > ${#opts[@]} )); then
+        return 1
+    fi
+    printf '%s\n' "${opts[$((choice - 1))]}"
+}
+
+
+# ─── Command: install ───────────────────────────────────────────────────────────
+# Usage: prev-termux install <package> [<version>] [--arch <arch>]
+#
+# Instala una build NORMAL (no subversioned) de <package> con el gestor de
+# paquetes detectado (pacman o apt):
+#   • pacman → descarga el .pkg.tar.xz de la release normal más reciente
+#     (o de <version> si se pasa) a $TMPDIR y ejecuta `pacman -U <file>`.
+#   • apt    → igual pero con el .deb y `apt install <file>`.
+# NUNCA pasa flags de auto-yes (--noconfirm / -y): el gestor pide confirmación.
+# --arch <arch> restringe el patrón de descarga (ej: --arch aarch64).
+#
+cmd_install() {
+    local package="" version="" arch=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --arch)
+                [[ -z "${2:-}" ]] && die "--arch requires a value"
+                arch="$2"; shift 2
+                ;;
+            --arch=*) arch="${1#*=}"; shift ;;
+            -*)
+                die "Unknown argument: $1"
+                ;;
+            *)
+                if [[ -z "$package" ]]; then
+                    package="$1"
+                elif [[ -z "$version" ]]; then
+                    version="$1"
+                else
+                    die "Unknown argument: $1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    [[ -z "$package" ]] && die "Usage: prev-termux install <package> [<version>] [--arch <arch>]"
+
+    # ── Detección del gestor de paquetes ────────────────────────────────────
+    local has_pacman=false has_apt=false
+    command -v pacman &>/dev/null && has_pacman=true
+    command -v apt &>/dev/null && has_apt=true
+
+    local pkg_manager=""
+    if [[ "$has_pacman" == "true" && "$has_apt" == "true" ]]; then
+        read -r -p "Ambos gestores disponibles (pacman/apt). ¿Cuál usar? [pacman] " pkg_manager || pkg_manager="pacman"
+        pkg_manager="${pkg_manager:-pacman}"
+        case "$pkg_manager" in
+            pacman|apt) : ;;
+            *) die "Gestor de paquetes inválido: '${pkg_manager}'. Usa 'pacman' o 'apt'." ;;
+        esac
+    elif [[ "$has_pacman" == "true" ]]; then
+        pkg_manager="pacman"
+    elif [[ "$has_apt" == "true" ]]; then
+        pkg_manager="apt"
+    else
+        die "No package manager found (pacman or apt)"
+    fi
+
+    # ── Buscar la release NORMAL más reciente del paquete ────────────────────
+    # Misma lógica de filtrado de tags que cmd_subinstall pero SOLO las
+    # normales (sin sufijo -subversioned). Si se pasa <version>, se filtra
+    # además por esa versión exacta (match de cadena literal, no regex).
+    info "Buscando release normal de '${package}' en ${RELEASE_REPO}..."
+    local releases_json=""
+    releases_json="$(gh release list -R "$RELEASE_REPO" --limit 200 \
+        --json tagName,createdAt 2>/dev/null || true)"
+    if [[ -z "$releases_json" || "$releases_json" == "[]" ]]; then
+        die "No se pudo listar releases de ${RELEASE_REPO} (o no hay releases)."
+    fi
+
+    local normals="" pkg_re=""
+    # $pkg_re escapado para test() (texto literal; jq ERE/POSIX, mismo escape que
+    # sed): 'libc++' → 'libc\+\+'. startswith() usa el nombre crudo.
+    pkg_re="$(_escape_regex "$package")"
+    normals="$(printf '%s' "$releases_json" | jq -c --arg p "$package" --arg pr "$pkg_re" --arg v "$version" '
+        ([.[] | select(.tagName | startswith($p + "-")) |
+                 select(.tagName | test("^" + $pr + "-.+-[0-9a-f]{7}$")) |
+                 select(.tagName | test("-subversioned$") | not)]) as $norm
+        | if $v == "" then $norm
+          else [ $norm[] | select(.tagName | startswith($p + "-" + $v + "-")) ]
+          end' 2>/dev/null || echo '[]')"
+
+    # Candidatos ordenados de más reciente a más antiguo (createdAt desc)
+    local candidate_tags=""
+    candidate_tags="$(printf '%s' "$normals" | jq -r 'sort_by(.createdAt) | reverse | .[].tagName' 2>/dev/null || true)"
+    if [[ -z "$candidate_tags" ]]; then
+        die "No hay release normal de '${package}'${version:+ (versión '${version}')} en ${RELEASE_REPO}. Compílalo primero: ./scripts/prev-termux build ${package}"
+    fi
+
+    # ── Descarga del artifact a $TMPDIR con cross-check de paquete ────────────
+    # Colisión de prefijos: el filtro jq matchea también python-numpy-*,
+    # python-pillow-* al buscar 'python'. El tag más reciente del prefijo podría
+    # ser de OTRO paquete. Defensa (Opción A): se descarga el artifact y se cruza
+    # con _artifact_version_for_pkg (validación desde la izquierda); si ningún
+    # artifact pertenece a $package, se descarta el tag y se prueba el
+    # siguiente candidato más reciente.
+    local pattern="*"
+    if [[ -n "$arch" ]]; then
+        pattern="*${arch}"
+    fi
+    if [[ "$pkg_manager" == "pacman" ]]; then
+        pattern="${pattern}.pkg.tar.xz"
+    else
+        pattern="${pattern}.deb"
+    fi
+
+    local tag="" ver="" artifact="" found_tag="" tmpdir="" candidate=""
+    local -a artifacts=()
+    local -a candidates=()
+    mapfile -t candidates <<< "$candidate_tags"
+
+    for candidate in "${candidates[@]}"; do
+        [[ -z "$candidate" ]] && continue
+        tmpdir="$(mktemp -d "${TMPDIR}/prev-termux-install.XXXXXX")"
+        info "Descargando artifacts de '${candidate}' (gestor: ${pkg_manager}, patrón: ${pattern}) a ${tmpdir}/..."
+        if ! gh release download "$candidate" -R "$RELEASE_REPO" \
+                --pattern "$pattern" --dir "$tmpdir" --clobber >/dev/null 2>&1; then
+            rm -rf "$tmpdir"
+            warn "Fallo al descargar artifacts de la release '${candidate}'; probando siguiente candidato."
+            continue
+        fi
+
+        shopt -s nullglob
+        artifacts=("$tmpdir"/${pattern})
+        shopt -u nullglob
+        if [[ ${#artifacts[@]} -eq 0 ]]; then
+            rm -rf "$tmpdir"
+            warn "La release '${candidate}' no contiene artifacts con patrón '${pattern}'; probando siguiente candidato."
+            continue
+        fi
+
+        # Cross-check: al menos un artifact debe pertenecer al paquete pedido
+        # (validación desde la izquierda; tolera versiones con guiones como
+        # libedit-20210216-3.1). La versión del artifact debe coincidir con la
+        # del TAG (ver_tag). Si ninguno pertenece → siguiente candidato.
+        local ver_tag="" good="" a="" artifact_ver="" a_base=""
+        ver_tag="$(printf '%s' "$candidate" | sed -E "s/^${pkg_re}-(.*)-[0-9a-f]{7}(-subversioned)?$/\1/" || true)"
+        for a in "${artifacts[@]}"; do
+            a_base="$(basename "$a")"
+            if artifact_ver="$(_artifact_version_for_pkg "$a_base" "$package")"; then
+                if [[ -n "$ver_tag" && "$artifact_ver" != "$ver_tag" ]]; then
+                    warn "Artifact '${a_base}' es de '${package}' pero su versión '${artifact_ver}' no coincide con el tag '${ver_tag}'; descartando."
+                else
+                    good="$a"
+                    break
+                fi
+            else
+                case "$a_base" in
+                    "${package}"-*|"${package}"_*)
+                        # Comparte prefijo con el paquete pedido pero no es él:
+                        # colisión real (python vs python-numpy) → sospecha.
+                        warn "Artifact '${a_base}' comparte prefijo con '${package}' (posible colisión real: python vs python-numpy); descartando."
+                        ;;
+                    *)
+                        # Dependencia normal del paquete → rechazo esperado.
+                        info "Artifact '${a_base}' no pertenece a '${package}' (dependencia normal); ignorando."
+                        ;;
+                esac
+            fi
+        done
+
+        if [[ -z "$good" ]]; then
+            rm -rf "$tmpdir"
+            warn "Los artifacts de '${candidate}' no son de '${package}' (posible colisión de prefijo: python-numpy, python-pillow...). Descartando; probando siguiente candidato."
+            continue
+        fi
+
+        found_tag="$candidate"
+        tag="$candidate"
+        artifact="$good"
+        break
+    done
+
+    if [[ -z "$found_tag" ]]; then
+        die "No se encontró ninguna release de '${package}' cuyos artifacts sean realmente de ese paquete (posible colisión de prefijo). Compílalo primero: ./scripts/prev-termux build ${package}"
+    fi
+
+    ver="$(printf '%s' "$tag" | sed -E "s/^${pkg_re}-(.*)-[0-9a-f]{7}$/\1/")"
+
+    if [[ ${#artifacts[@]} -gt 1 ]]; then
+        warn "Varios artifacts coinciden con '${pattern}'; instalando: $(basename "$artifact")"
+    fi
+
+    # ── Instalación (SIN auto-yes: el gestor pide confirmación) ─────────────
+    echo ""
+    info "Instalando ${package} ${ver} (${pkg_manager}): $(basename "$artifact")"
+    if [[ "$pkg_manager" == "pacman" ]]; then
+        pacman -U "$artifact" || {
+            err "pacman no completó la instalación. El artifact queda en: ${artifact}"
+            exit 1
+        }
+    else
+        apt install "$artifact" || {
+            err "apt no completó la instalación. El artifact queda en: ${artifact}"
+            exit 1
+        }
+    fi
+    rm -rf "$tmpdir"
+    ok "Instalación de '${package}' ${ver} completada con ${pkg_manager}."
+}
+
+
+# ─── Command: switch ────────────────────────────────────────────────────────────
+# Usage: prev-termux switch [<package>]
+#
+# Cambia la versión subversionada ACTIVA de <package> en $PREFIX/bin.
+# Las versiones subversionadas viven en $PREV_TERMUX_INSTALL_DIR/<pkg>-<ver>/
+# (creadas por 'subinstall'). Al elegir una versión se (re)crean los symlinks
+# de TODOS sus binarios en $PREFIX/bin (criterio simple: si el paquete tiene
+# varios binarios en bin/, se enlazan todos).
+# Sin argumento: elige el paquete (fzf) entre los instalados.
+# Con fzf ausente: cae a un menú numerado con read.
+#
+cmd_switch() {
+    local package="${1:-}"
+    local prefix="${PREFIX:-/data/data/com.termux/files/usr}"
+    local install_dir="${PREV_TERMUX_INSTALL_DIR:-${HOME}/.local/opt}"
+    local bin_dir="${prefix}/bin"
+
+    # ── Sin paquete: elegirlo entre los instalados ───────────────────────────
+    if [[ -z "$package" ]]; then
+        shopt -s nullglob
+        local dirs=("$install_dir"/*/)
+        shopt -u nullglob
+        if [[ ${#dirs[@]} -eq 0 ]]; then
+            die "No hay paquetes subversionados instalados en ${install_dir}. Usa: prev-termux subinstall <package>"
+        fi
+        # Recuperar el nombre del paquete de cada directorio <pkg>-<ver>/
+        local d="" bname="" parsed_pkg=""
+        local -a pkg_names=()
+        for d in "${dirs[@]}"; do
+            bname="$(basename "${d%/}")"
+            parsed_pkg="$(echo "$bname" | sed -E 's/^(.*)[-_][0-9][^-_]*$/\1/')"
+            if [[ -n "$parsed_pkg" && "$parsed_pkg" != "$bname" ]]; then
+                pkg_names+=("$parsed_pkg")
+            fi
+        done
+        if [[ ${#pkg_names[@]} -eq 0 ]]; then
+            die "No se pudieron identificar paquetes en ${install_dir}."
+        fi
+        local unique=""
+        unique="$(printf '%s\n' "${pkg_names[@]}" | sort -u)"
+        # Convertir la lista multi-línea en array para _select_line (no vía pipe)
+        local -a unique_opts=()
+        mapfile -t unique_opts <<< "$unique"
+        local chosen=""
+        chosen="$(_select_line "Selecciona paquete: " "${unique_opts[@]}")" || die "Selección cancelada o inválida"
+        [[ -z "$chosen" ]] && die "No se seleccionó ningún paquete"
+        package="$chosen"
+    fi
+
+    # ── Versiones instaladas del paquete ─────────────────────────────────────
+    shopt -s nullglob
+    local pkg_dirs=("$install_dir"/"$package"-*/)
+    shopt -u nullglob
+    if [[ ${#pkg_dirs[@]} -eq 0 ]]; then
+        die "No hay versiones subversionadas instaladas de '${package}'. Usa: prev-termux subinstall ${package}"
+    fi
+
+    # ── Detectar la versión ACTUAL (a qué dir apunta el symlink) ─────────────
+    local current=""
+    if [[ -L "${bin_dir}/${package}" ]]; then
+        local resolved=""
+        resolved="$(readlink -f "${bin_dir}/${package}" 2>/dev/null || true)"
+        if [[ -n "$resolved" ]]; then
+            local d=""
+            for d in "${pkg_dirs[@]}"; do
+                if [[ "$resolved" == "${d%/}"* ]]; then
+                    current="$(basename "${d%/}")"
+                    break
+                fi
+            done
+        fi
+    fi
+
+    # ── Selección de versión (fzf o menú numerado) ──────────────────────────
+    local entry="" label=""
+    local -a labels=()
+    for d in "${pkg_dirs[@]}"; do
+        entry="$(basename "${d%/}")"
+        if [[ "$entry" == "$current" ]]; then
+            label="${entry} (actual)"
+        else
+            label="${entry}"
+        fi
+        labels+=("$label")
+    done
+
+    local selected=""
+    selected="$(_select_line "Selecciona versión de ${package}: " "${labels[@]}")" || die "Selección cancelada o inválida"
+    [[ -z "$selected" ]] && die "No se seleccionó ninguna versión"
+    # Quitar la marca (actual) si se eligió la versión ya activa
+    selected="${selected% (actual)}"
+
+    # ── Crear symlinks en $PREFIX/bin para TODOS los binarios ────────────────
+    local target_dir="$install_dir/${selected}"
+    local target_bin="${target_dir}/bin"
+    if [[ ! -d "$target_bin" ]]; then
+        die "No hay bin/ en ${target_dir}. Instalación incompleta de '${selected}'."
+    fi
+
+    mkdir -p "$bin_dir"
+    shopt -s nullglob
+    local binaries=("$target_bin"/*)
+    shopt -u nullglob
+    if [[ ${#binaries[@]} -eq 0 ]]; then
+        die "No se encontraron binarios en ${target_bin}"
+    fi
+
+    local bin_file="" bname="" created=0
+    for bin_file in "${binaries[@]}"; do
+        bname="$(basename "$bin_file")"
+        ln -sfn "$bin_file" "${bin_dir}/${bname}"
+        ok "Symlink: ${bin_dir}/${bname} → ${bin_file}"
+        created=$((created + 1))
+    done
+
+    echo ""
+    ok "Versión activa de '${package}': ${selected} (${created} symlink(s) en ${bin_dir}/)"
 }
 
 
@@ -888,10 +1637,27 @@ ${BOLD}Commands:${NC}
       (data/data/com.termux/files/home/.local/opt/...) vs standard
       (data/data/com.termux/files/usr/...).
       Creates versioned symlinks in ~/.local/bin/<bin>-<version>
-      If no argument is given, shows all artifacts in output/ via fzf.
-      If a package name is given, filters artifacts by that package.
+      If no argument is given, shows all artifacts in output/ via fzf
+      (or a numbered menu if fzf is not installed).
+      If a package name is given, downloads the latest release of that
+      package from GitHub (normal or subversioned) and extracts it.
       If a .pkg.tar.xz file is given, extracts it directly.
       Never uses pacman -U — purely local extraction
+
+  install <package> [<version>] [--arch <arch>]
+      Install a NORMAL build of <package> with the detected package manager
+      (pacman or apt): downloads the .pkg.tar.xz (pacman) or .deb (apt) of
+      the latest normal release — or of <version> if given — to $TMPDIR and
+      runs the manager WITHOUT auto-yes flags (the manager asks for
+      confirmation).
+      --arch <arch>   Restrict the download pattern to that architecture
+
+  switch [<package>]
+      Switch the active subversioned version of <package> in $PREFIX/bin:
+      (re)creates symlinks to $PREV_TERMUX_INSTALL_DIR/<pkg>-<ver>/bin/*,
+      marking the current version with (actual). If <package> is omitted,
+      pick it among the installed subversioned packages (fzf, or a
+      numbered menu if fzf is not installed).
 
   status [<package>]
       Show recent workflow runs (status, package, elapsed).
@@ -917,6 +1683,11 @@ ${BOLD}Examples:${NC}
   prev-termux build libfoo --commit a1b2c3d --subversioned
   prev-termux subinstall
   prev-termux subinstall ./output/bat-0.24.0-0-aarch64.pkg.tar.xz
+  prev-termux subinstall bat
+  prev-termux install bat
+  prev-termux install bash 5.1.16 --arch aarch64
+  prev-termux switch zig
+  prev-termux switch
   prev-termux fetch ncurses
   prev-termux fetch ncurses 6.1.20180707 --arch aarch64
   prev-termux fetch bash 5.1.16 --subversioned --out /sdcard/Download
@@ -934,12 +1705,14 @@ ${BOLD}Environment:${NC}
                       Auto-detected when run inside a git clone.
 
   PREV_TERMUX_CACHE_DIR   Cache directory (default: ~/.cache/prev-termux)
-  PREV_TERMUX_INSTALL_DIR Install directory for 'subinstall' (default: ~/.local/opt)
+  PREV_TERMUX_INSTALL_DIR Install directory for 'subinstall' and 'switch'
+                          (default: ~/.local/opt)
   PREV_TERMUX_BIN_DIR     Symlink directory for 'subinstall' (default: ~/.local/bin)
 
 ${BOLD}Requirements:${NC}
 
-  git, fzf, gh (GitHub CLI), jq
+  git, gh (GitHub CLI), jq
+  fzf is optional (falls back to a numbered menu when absent).
   All available via: pkg install git fzf gh jq
 
 ${BOLD}Library dependencies:${NC}
@@ -993,6 +1766,13 @@ main() {
         subinstall)
             [[ $# -gt 1 ]] && die "Usage: prev-termux subinstall [<package>|<file.pkg.tar.xz>]"
             cmd_subinstall "$@"
+            ;;
+        install)
+            [[ $# -lt 1 ]] && die "Usage: prev-termux install <package> [<version>] [--arch <arch>]"
+            cmd_install "$@"
+            ;;
+        switch)
+            cmd_switch "$@"
             ;;
         status)
             cmd_status "$@"
