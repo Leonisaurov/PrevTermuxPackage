@@ -28,25 +28,22 @@ pkg install fzf jq git gh
 ```
 PrevTermuxPackage/
 ├── .github/workflows/
-│   └── build-old-package.yml    # Workflow GHA: 2 jobs (build-normal + build-subversioned)
+│   └── build-old-package.yml    # Workflow GHA: inputs jobs/use_store/heavy, 2 jobs (timeout 600)
+├── build-system/                # Build system PROPIO VENDERED (upstream de5ca479 + ~19 impl.)
+│   ├── REVISION                 # SHA upstream, URL y fecha de import
+│   ├── FORK.md                  # Tabla de implementaciones directas (# Legacy compatibility:)
+│   └── .fork-files              # Archivos con implementaciones (abort-on-conflict)
 ├── output/                      # Artifacts descargados (.pkg.tar.xz)
-├── patches/
-│   ├── 001-buildorder-dev-mapping.patch
-│   ├── 002-extract-dep-info-dev.patch
-│   ├── 003-setup-vars-fallback.patch
-│   ├── 004-make-install-rust.patch
-│   ├── 005-termux-setup-rust.patch
-│   ├── 006-start-build-build-in-src.patch
-│   ├── 007-patch-package-normalize-paths.patch
-│   ├── 008-post-patch-debug.patch
-│   ├── 009-make-install-debug.patch
-│   └── 010-prefix-override.patch    # Prefix versionado (TERMUX_PREFIX_OVERRIDE)
+├── patches/                     # REFERENCIA (16 parches 001–016; ya NO se aplican en runtime)
 ├── scripts/
-│   ├── prev-termux              # CLI principal (entrypoint interactivo)
-│   ├── gha-prepare.sh           # Prepara el build system (master + parches 001–010)
-│   ├── gha-build.sh             # Build compartido (--format debian, --subversioned, conversión)
+│   ├── prev-termux              # CLI principal (build, subinstall, install, switch, fetch, ...)
+│   ├── gha-prepare.sh           # Copia build-system/ vendered + store-lib + normalize-legacy-builds.sh
+│   ├── gha-build.sh             # Build compartido (--format debian, --store, --subversioned, heavy)
+│   ├── normalize-legacy-builds.sh  # Normalización de build.sh históricos (FASE 1/2/2b/2c)
 │   ├── deb2pkg.sh               # Convierte .deb → .pkg.tar.xz (pacman)
-│   ├── patch-build-system.sh    # Aplica parches 001–010 (idempotente)
+│   ├── store-lib.sh             # Hook PrevTermux Store (reutiliza deps del pool)
+│   ├── store-publish.sh         # Publica deps/objetivos al pool (prev-termux-pool-<arch>)
+│   ├── patch-build-system.sh    # REFERENCIA (aplicaba parches 001–016; ya NO se ejecuta)
 │   └── lib/
 │       ├── discover.sh          # Descubrimiento de versiones + caché persistente
 │       └── version-extract.sh   # Extracción canónica de TERMUX_PKG_VERSION
@@ -73,7 +70,7 @@ El flujo completo consta de seis etapas:
 3. **Select** — Las versiones se presentan ordenadas por fecha en un selector `fzf`. Puedes filtrar escribiendo. El preview muestra el `build.sh` en ese commit.
 4. **Release check** — Al seleccionar una versión, el script construye el tag `{package}-{version}-{sha7}` y consulta la API de GitHub Releases.
 5. **Download** — Si ya existe un release con ese tag, descarga el `.pkg.tar.xz` directamente (instantáneo) a `output/`.
-6. **Build** — Si no existe, dispara el workflow `build-old-package.yml` mediante `workflow_dispatch`. Cada run lanza **2 jobs en paralelo e independientes**: `build-normal` (paquete estándar, prefix del dispositivo) y `build-subversioned` (paquete con prefix versionado `~/.local/opt/<pkg>-<ver>/`, autocontenido). Cada job compila en los runners de GitHub usando `run-docker.sh` y publica su **propio release** (tag normal o `-subversioned`).
+6. **Build** — Si no existe, dispara el workflow `build-old-package.yml` mediante `workflow_dispatch` (input `jobs`: `both` = 2 jobs `build-normal` + `build-subversioned`, o solo `normal` / `subversioned`). El build usa el **build system vendered** (`build-system/` copiado por `gha-prepare.sh`) y la **PrevTermux Store** (`use_store`): las dependencias ya compiladas se reutilizan del pool `prev-termux-pool-<arch>` en vez de recompilarse. Cada job publica su **propio release** (tag normal o `-subversioned`).
 
 ```
 Discover (git log -G en bare repo persistente)
@@ -84,7 +81,8 @@ fzf (selector interactivo + preview build.sh)
     ↓
 ¿Ya existe release con tag {pkg}-{ver}-{sha7}[-subversioned]?
     ├── Sí → Descarga directa a output/ ✅
-    └── No  → Dispara GHA workflow (2 jobs: normal + subversioned) → 2 Releases 🚀
+    └── No  → Dispara GHA workflow (build system vendered + PrevTermux Store)
+              → jobs normal / subversioned / ambos → Releases 🚀
 ```
 
 ## Comandos disponibles
@@ -92,9 +90,12 @@ fzf (selector interactivo + preview build.sh)
 | Comando | Descripción |
 |---------|-------------|
 | `./scripts/prev-termux list <package> [--refresh]` | Lista versiones disponibles con fzf. `--refresh` fuerza redescubrimiento |
-| `./scripts/prev-termux build <package> [--refresh] [--subversioned]` | Selecciona versión con fzf y descarga o dispara build. `--refresh` fuerza redescubrimiento. `--subversioned` apunta al release/tag versionado (`-subversioned`) |
+| `./scripts/prev-termux build <package> [--refresh] [--subversioned] [--heavy]` | Detecta run exitoso/en curso, pregunta antes de relanzar, selecciona versión con fzf y descarga o dispara build. `--subversioned` apunta al release/tag versionado (`-subversioned`) y manda `jobs=subversioned`. `--heavy` para builds largos (ZRAM 16 GB + free disk) |
 | `./scripts/prev-termux build <package> --commit <sha> [--subversioned]` | Build directo sin fzf usando un commit SHA específico |
-| `./scripts/prev-termux subinstall [<file>]` | Extrae .pkg.tar.xz a `~/.local/opt/<pkg>-<ver>/` con symlinks versionados. Detecta el layout del tar (versionado vs estándar) automáticamente |
+| `./scripts/prev-termux subinstall [<pkg>|<file>]` | Descarga de GitHub (lista TODAS las versiones con fzf, luego elige subversion/normal) o extrae un `.pkg.tar.xz` local a `~/.local/opt/<pkg>-<ver>/` con symlinks versionados. Detecta el layout del tar automáticamente |
+| `./scripts/prev-termux install <package> [<version>] [--arch <arch>]` | Instala un build NORMAL con el gestor detectado (pacman/apt, sin `-y`). Selecciona versión con fzf |
+| `./scripts/prev-termux switch [<package>]` | Cambia la versión subversionada activa: (re)crea symlinks de los binarios a `$PREFIX/bin`, marca `(actual)` |
+| `./scripts/prev-termux fetch <package> [version] [--arch <arch>] [--subversioned] [--out <dir>]` | Descarga del pool de la PrevTermux Store (`prev-termux-pool-<arch>` + `manifest.json`) |
 | `./scripts/prev-termux status [<package>]` | Muestra últimos 20 runs con indicadores de color: ✓ verde (success), ✗ rojo (failure), * amarillo (in progress), - gris (skipped), ○ gris (cancelled). Filtra por paquete si se especifica |
 | `./scripts/prev-termux cache info` | Estadísticas del caché persistente (tamaño, edad, paquetes) |
 | `./scripts/prev-termux cache clear [<package>]` | Limpia caché de un paquete (o todos si sin argumento) |
@@ -158,11 +159,47 @@ Si se especifica un nombre de paquete, filtra los runs que lo contengan (case-in
 # Modo interactivo: elige artifact desde output/ con fzf
 ./scripts/prev-termux subinstall
 
+# Modo paquete: lista TODAS las versiones con fzf, luego elige subversion/normal y descarga de GitHub
+./scripts/prev-termux subinstall bat
+
 # Modo directo: extrae un archivo específico
 ./scripts/prev-termux subinstall ./output/bat-0.24.0-0-aarch64.pkg.tar.xz
 ```
 
-Extrae un `.pkg.tar.xz` a `~/.local/opt/<paquete>-<version>/` y crea symlinks versionados en `~/.local/bin/<bin>-<version>`. No usa `pacman -U` — es una extracción completamente portable. Detecta automáticamente el layout del tar: los artifacts **subversioned** (prefijo `home/.local/opt/`) se extraen a `~/.local/opt/<pkg>-<ver>/`, y los **estándar** (prefijo `com.termux/files/usr/`) con el comportamiento actual.
+Con un nombre de paquete, `subinstall` descarga el release desde GitHub (todas las versiones listadas con fzf o menú numerado, luego elige modo subversioned/normal si existen ambos). Con un archivo `.pkg.tar.xz`, lo extrae a `~/.local/opt/<paquete>-<version>/` y crea symlinks versionados en `~/.local/bin/<bin>-<version>`. No usa `pacman -U` — es una extracción completamente portable. Detecta automáticamente el layout del tar: los artifacts **subversioned** (prefijo `home/.local/opt/`) se extraen a `~/.local/opt/<pkg>-<ver>/`, y los **estándar** (prefijo `com.termux/files/usr/`) con el comportamiento actual.
+
+### Instalar un build normal con el gestor de paquetes
+
+```bash
+# Paquete normal con el gestor detectado (pacman o apt; si hay ambos, pregunta)
+./scripts/prev-termux install bat
+
+# Versión exacta + arquitectura
+./scripts/prev-termux install bash 5.1.16 --arch aarch64
+```
+
+`install` selecciona la versión (fzf), descarga el `.pkg.tar.xz` (pacman) o `.deb` (apt) a `$TMPDIR` y ejecuta el gestor **sin** flags de auto-confirmación (`-y`/`--noconfirm`).
+
+### Cambiar la versión subversionada activa
+
+```bash
+# Elige el paquete entre los instalados y cambia la versión activa
+./scripts/prev-termux switch
+
+# Cambia la versión activa de un paquete concreto
+./scripts/prev-termux switch zig
+```
+
+`switch` presenta las versiones subversionadas instaladas con fzf o menú numerado (marca la actual con `(actual)`) y (re)crea los symlinks de todos los binarios a `$PREFIX/bin`.
+
+### Descargar del PrevTermux Store
+
+```bash
+# Descarga del pool de la arquitectura (manifest.json como índice)
+./scripts/prev-termux fetch zig
+```
+
+`fetch` baja el `.deb` del pool `prev-termux-pool-<arch>` (y el `.pkg.tar.xz` si el paquete es objetivo del pool). Sin versión: si solo hay una disponible la descarga, si hay varias las lista.
 
 ### Gestión de caché
 
@@ -194,6 +231,8 @@ El modo **subversioned** resuelve esto compilando la versión antigua **con su p
 ```
 
 Todos los paths incrustados apuntan al árbol versionado → cada versión queda **autocontenida** en `~/.local/opt/<pkg>-<ver>/` y puede coexistir con otras sin pisarse.
+
+> ✅ **Validado en CI (2026-08-09)**: `zig` 0.15.2 y 0.16.0 subversionado **VERDE** (runs `31303490256` / `31303490320`, `jobs=subversioned`, `heavy=true`). La implementación vendered en `build-system/` re-deriva el prefix vía `TERMUX_PREFIX_OVERRIDE` **antes** de sourcear el `build.sh`, así que el wrapper proot de 0.15.2 y los diffs `@TERMUX_PREFIX@` de 0.16.0 quedan versionados automáticamente, sin parches manuales de paths.
 
 Además, en modo subversioned las **dependencias también quedan versionadas**: `gha-build.sh` fuerza `-F` (full mode) **siempre**, sin importar el `build_mode` de entrada. La recursión de `build-package.sh` hereda `TERMUX_PREFIX_OVERRIDE` del entorno, así que la cadena de dependencias se recompila con el prefix versionado y cada dep cae en `~/.local/opt/<dep>-<ver>/`. El coste es un rebuild completo de toda la cadena (ver [Limitaciones](#limitaciones-conocidas)).
 
@@ -269,8 +308,11 @@ El workflow se dispara exclusivamente mediante `workflow_dispatch` (trigger manu
 | `architecture` | Arquitectura destino | `aarch64` |
 | `format` | Formato del paquete (aceptado: `pacman`/`debian`). **El build SIEMPRE compila `.deb`** (formato universal, compatible con commits pre-2021 que no soportan pacman); al final `deb2pkg.sh` convierte el `.deb` a `.pkg.tar.xz`. El input se mantiene por compatibilidad con el dispatch | `debian` |
 | `build_mode` | Modo de build (`fast` o `full`) | `fast` |
+| `heavy` | Optimiza runners para builds largos (ZRAM 16 GB + free disk) | `false` |
+| `use_store` | Reutiliza deps ya compiladas de la PrevTermux Store (pool por arquitectura) | `true` |
+| `jobs` | Jobs a ejecutar: `both` (normal + subversioned), `normal`, `subversioned` | `both` |
 
-Cada run lanza **2 jobs en paralelo, independientes y sin skips** (ambos disparados por `workflow_dispatch`, sin `needs`):
+Cada job tiene `timeout-minutes: 600`. Con `jobs=both` el run lanza **2 jobs** (`build-normal` + `build-subversioned`); con `normal` o `subversioned` solo el correspondiente. La publicación al pool del store se serializa con `needs` + `success()` (el skip de un job no bloquea la publicación del otro):
 
 | Job | Qué compila | Artifact (ambos formatos) | Tag / Release |
 |-----|-------------|----------|---------------|
@@ -280,11 +322,11 @@ Cada run lanza **2 jobs en paralelo, independientes y sin skips** (ambos dispara
 Flujo interno (idéntico en ambos jobs, salvo las diferencias marcadas):
 1. Clona el repo actual (PrevTermuxPackage) y `termux/termux-packages` en el commit exacto
 2. Extrae `TERMUX_PKG_VERSION` del `build.sh` (con resolución de variables `${VAR%.*}`)
-3. `./scripts/gha-prepare.sh` prepara el build system: sparse checkout de master (scripts, keyring, elf-cleaner, ndk-patches) + `patch-build-system.sh` aplica los parches 001–010
+3. `./scripts/gha-prepare.sh` prepara el build system: copia el árbol **vendered** de `build-system/` (byte-idéntico a `de5ca479` + ~19 implementaciones `# Legacy compatibility:`) al árbol del paquete, copia `store-lib.sh` y ejecuta `normalize-legacy-builds.sh` (FASE 1 renames/URLs muertas/checksums; FASE 2 gnu89 bash; FASE 2b/2c `autoreconf -fi` tar/util-linux). El runtime **NO descarga master ni aplica parches**
 4. **Instala las herramientas de conversión**: `libarchive-tools` (`bsdtar`) y `binutils` (`ar`) — necesarias para `deb2pkg.sh` (step `Install conversion tools` en ambos jobs)
 5. `./scripts/gha-build.sh` ejecuta `./scripts/run-docker.sh ./build-package.sh ...` (no usa `container:` directo) para levantar el contenedor `ghcr.io/termux/package-builder` con el NDK correcto
-6. Compila el paquete **siempre con `--format debian`** (formato universal; el input `format` se valida pero se ignora para el build) con `-a <arquitectura>`, en modo `fast` (`-I`, instala dependencias) o `full` (`-F`, rebuild completo)
-7. **Solo `build-subversioned`**: `gha-build.sh --subversioned` exporta `TERMUX_PREFIX_OVERRIDE=/data/data/com.termux/files/home/.local/opt/<pkg>-<ver>` e inyecta la variable al contenedor vía `TERMUX_DOCKER_EXEC_EXTRA_ARGS`. El patch 010 hace que `build-package.sh` compile con ese prefix versionado. Además fuerza **`-F` (full mode) SIEMPRE**: la recursión de `build-package.sh` hereda `TERMUX_PREFIX_OVERRIDE`, así que las dependencias también caen en el prefix versionado
+6. Compila el paquete **siempre con `--format debian`** (formato universal; el input `format` se valida pero se ignora para el build) con `-a <arquitectura>`, en modo `fast` (`-I`, instala dependencias) o `full` (`-F`, rebuild completo). Con `use_store` activo, el hook `store-lib.sh` consulta el pool `prev-termux-pool-<arch>` antes de recompilar cada dependencia (también en `-F`/subversioned)
+7. **Solo `build-subversioned`**: `gha-build.sh --subversioned` exporta `TERMUX_PREFIX_OVERRIDE=/data/data/com.termux/files/home/.local/opt/<pkg>-<ver>` e inyecta la variable al contenedor vía `TERMUX_DOCKER_EXEC_EXTRA_ARGS`. La implementación vendered en `build-system/` hace que `build-package.sh` re-derive el prefix **antes** de sourcear el `build.sh` (el wrapper proot y los diffs `@TERMUX_PREFIX@` quedan versionados). Además fuerza **`-F` (full mode) SIEMPRE**: la recursión de `build-package.sh` hereda `TERMUX_PREFIX_OVERRIDE`, así que las dependencias también caen en el prefix versionado
 8. **`deb2pkg.sh` convierte cada `.deb` a `.pkg.tar.xz`**: busca los `.deb` en `output/` (master) o `debs/` (commits pre-2021) y genera el `.pkg.tar.xz` (`.PKGINFO`, `.MTREE`, `.BUILDINFO`, re-empaquetado `bsdtar` + `xz`)
 9. Sube **ambos formatos** (`.deb` original + `.pkg.tar.xz`) como GitHub Actions artifact (por si el release falla)
 10. Genera el tag correspondiente (`{package}-{version}-{sha7}` o con sufijo `-subversioned`)
@@ -312,15 +354,27 @@ Flujo interno (idéntico en ambos jobs, salvo las diferencias marcadas):
 
 Todas son opcionales. Los valores por defecto funcionan sin configuración adicional.
 
+**Variables del PrevTermux Store** (build-time, dentro del contenedor de GHA):
+
+| Variable | Descripción | Valor por defecto |
+|----------|-------------|-------------------|
+| `TERMUX_STORE_ENABLED` | Activa el hook de reutilización del pool (`--store` del `gha-build.sh`, input `use_store`) | `false` (si `use_store=true` → `true`) |
+| `TERMUX_STORE_URL` | URL base de los releases del pool | `https://github.com/${GITHUB_REPOSITORY}/releases/download` |
+| `TERMUX_STORE_MODE` | Modo de reutilización (`normal` / `subversioned`) | según `jobs` |
+| `TERMUX_STORE_DIR` | Caché local del store dentro del build | `/home/builder/termux-packages/.store-cache/store` |
+| `TERMUX_STORE_BS_REV` | SHA de `build-system/REVISION` (clave de la caché CI) | leído de `build-system/REVISION` |
+
 ## Limitaciones conocidas
 
 - **Checksum mismatches**: Algunos tarballs upstream cambian con el tiempo (reemplazos, actualizaciones de maintainer), causando errores de checksum en paquetes muy antiguos. Si el build falla por SHA256 mismatch, prueba con `build_mode: full` o busca un commit más reciente.
-- **Compilación lenta**: Paquetes que involucran LLVM (zig, rust, llvm, rustc) pueden tomar horas en compilarse en los runners gratuitos de GHA. No hay límite de tiempo en GHA, pero el proceso puede ser muy extenso.
+- **Compilación lenta**: Paquetes que involucran LLVM (zig, rust, llvm, rustc) pueden tomar horas en compilarse en los runners gratuitos de GHA. Además, **los repos públicos tienen tope de 360 min por job**: builds como `zig` subversioned (~280 min) necesitan `heavy=true` (ZRAM 16 GB + free disk) y margen suficiente.
 - **Dependencias**: Las dependencias se resuelven con `-I` (install) desde el repo oficial APT. Si una versión muy antigua requiere dependencias incompatibles, usa `build_mode: full` con el flag `-F` para rebuildear todo desde cero.
 - **Sin builds paralelos por paquete/versión**: El workflow GHA compila un solo paquete por ejecución. Cada run lanza 2 jobs (normal + subversioned) en paralelo, pero no hay soporte para compilar múltiples versiones o paquetes a la vez.
 - **Imagen Docker**: Solo existe la imagen `ghcr.io/termux/package-builder`. Si builds muy antiguos fallan por mismatch del NDK, considera construir una imagen custom (no soportado por defecto en este proyecto).
-- **Coste de `-F` en subversioned**: el modo subversioned fuerza SIEMPRE `full mode` (`-F`) para que las dependencias queden versionadas (la recursión de `build-package.sh` hereda `TERMUX_PREFIX_OVERRIDE` y las deps caen en `~/.local/opt/<dep>-<ver>/`). En paquetes con cadenas de dependencias grandes, el rebuild completo de toda la cadena puede tardar horas en los runners gratuitos de GHA.
+- **Coste de `-F` en subversioned**: el modo subversioned fuerza SIEMPRE `full mode` (`-F`) para que las dependencias queden versionadas (la recursión de `build-package.sh` hereda `TERMUX_PREFIX_OVERRIDE` y las deps caen en `~/.local/opt/<dep>-<ver>/`). En paquetes con cadenas de dependencias grandes, el rebuild completo de toda la cadena puede tardar horas en los runners gratuitos de GHA. La PrevTermux Store mitiga parcialmente: las deps ya compiladas se reutilizan del pool.
 - **Artifact subversioned NO instalable con pacman**: el `.pkg.tar.xz` versionado contiene paths `~/.local/opt/<pkg>-<ver>/` que no corresponden al prefix del dispositivo. Es un artifact **portable para `subinstall`**, no para `pacman -U`.
+- **Colisión de assets normal/subversioned**: `deb2pkg.sh` nombra **igual** ambos artifacts (`pkg-ver-rev-arch`); solo el tag distingue. Por eso el CLI siempre descarga por el tag correcto (`{pkg}-{ver}-{sha7}` vs `-subversioned`).
+- **Checksums recomputados**: si un upstream regenera un tarball (contenido byte-idéntico, hash distinto), el checksum histórico deja de validar. La FASE 1 de `normalize-legacy-builds.sh` recoge las sustituciones conocidas (bintray, fossies, foot).
 
 ## Arquitectura / Cómo funciona internamente
 
@@ -346,7 +400,7 @@ El sistema mantiene dos niveles de caché en `PREV_TERMUX_CACHE_DIR` (defecto: `
 
 ### GHA y `run-docker.sh`
 
-El workflow `build-old-package.yml` no usa `container:` directamente. La preparación y el build están extraídos en `scripts/gha-prepare.sh` (sparse checkout de master + parches 001–010) y `scripts/gha-build.sh` (build compartido por ambos jobs). Este último ejecuta `./scripts/run-docker.sh ./build-package.sh ...` dentro del checkout de `termux-packages`, **siempre con `--format debian`** (formato universal; el input `format` se mantiene por compatibilidad del dispatch pero se ignora para el build). Esto levanta el contenedor `ghcr.io/termux/package-builder` con el NDK y las herramientas de compilación correctas. El script `run-docker.sh` maneja el mapeo de volúmenes y el entorno, e inyecta `TERMUX_DOCKER_EXEC_EXTRA_ARGS` al `docker exec` (donde `gha-build.sh --subversioned` pasa `TERMUX_PREFIX_OVERRIDE`). Tras el build, `deb2pkg.sh` convierte cada `.deb` de `output/` o `debs/` a `.pkg.tar.xz`.
+El workflow `build-old-package.yml` no usa `container:` directamente. La preparación y el build están extraídos en `scripts/gha-prepare.sh` (copia el árbol **vendered** de `build-system/` — byte-idéntico a `de5ca479` + ~19 implementaciones `# Legacy compatibility:` — al checkout del paquete histórico, copia `store-lib.sh` y ejecuta `normalize-legacy-builds.sh`: FASE 1 renames/URLs muertas/checksums, FASE 2 gnu89 bash, FASE 2b/2c `autoreconf -fi` tar/util-linux; el runtime **NO descarga master ni aplica parches**) y `scripts/gha-build.sh` (build compartido por ambos jobs). Este último ejecuta `./scripts/run-docker.sh ./build-package.sh ...` dentro del checkout de `termux-packages`, **siempre con `--format debian`** (formato universal; el input `format` se mantiene por compatibilidad del dispatch pero se ignora para el build). Esto levanta el contenedor `ghcr.io/termux/package-builder` con el NDK y las herramientas de compilación correctas. El script `run-docker.sh` maneja el mapeo de volúmenes y el entorno, e inyecta `TERMUX_DOCKER_EXEC_EXTRA_ARGS` al `docker exec` (donde `gha-build.sh --subversioned` pasa `TERMUX_PREFIX_OVERRIDE`, y `--store` pasa `TERMUX_STORE_*`). Tras el build, `deb2pkg.sh` convierte cada `.deb` de `output/` o `debs/` a `.pkg.tar.xz`.
 
 ### Flujo de release
 

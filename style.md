@@ -1,6 +1,6 @@
 # Style Guide: PrevTermuxPackage
 
-> Guía de convenciones de la codebase — generada desde la investigación del código real (2026-07-31).
+> Guía de convenciones de la codebase — generada desde la investigación del código real (2026-08-09).
 
 ## Estructura del proyecto
 
@@ -8,15 +8,26 @@
 PrevTermuxPackage/
 ├── .github/workflows/
 │   └── build-old-package.yml     # Workflow GHA (workflow_dispatch) — build en la nube
+├── build-system/                 # Build system PROPIO VENDERED (upstream de5ca479 + ~19 impl.)
+│   ├── REVISION                  # SHA upstream, URL, fecha de import
+│   ├── FORK.md                   # Tabla de implementaciones directas (# Legacy compatibility:)
+│   └── .fork-files               # Archivos con implementaciones (abort-on-conflict)
 ├── docs/
 │   ├── PROGRESS.md               # Estado/progreso, whack-a-mole del build system
 │   └── build-system-internals.md # Catálogo de dependencias del build system + hallazgos de compatibilidad
-├── patches/                      # LOS ARREGLOS: 9 patches al build system moderno (001–009)
+├── patches/                      # REFERENCIA: 16 parches migrados 001–016 (ya NO se aplican)
 ├── scripts/
-│   ├── prev-termux               # CLI principal (entrypoint, 760 líneas)
-│   ├── patch-build-system.sh     # Aplica los 9 patches + normalización legacy (idempotente)
+│   ├── prev-termux               # CLI principal (entrypoint; build/subinstall/install/switch/fetch/...)
+│   ├── gha-prepare.sh            # Copia build-system/ vendered + store-lib + normalize-legacy-builds.sh
+│   ├── gha-build.sh              # Build compartido (--format debian, --store, --subversioned, heavy)
+│   ├── normalize-legacy-builds.sh# Normalización de build.sh históricos (FASE 1/2/2b/2c)
+│   ├── deb2pkg.sh                # Convierte .deb → .pkg.tar.xz (pacman)
+│   ├── store-lib.sh              # Hook PrevTermux Store (reutiliza deps del pool)
+│   ├── store-publish.sh          # Publica deps/objetivos al pool (prev-termux-pool-<arch>)
+│   ├── patch-build-system.sh     # REFERENCIA (aplicaba parches 001–016; ya NO se ejecuta)
 │   └── lib/
-│       └── discover.sh           # Librería: descubrimiento de versiones + caché persistente (665 líneas)
+│       ├── discover.sh           # Librería: descubrimiento de versiones + caché persistente
+│       └── version-extract.sh    # Extracción canónica de TERMUX_PKG_VERSION
 ├── output/                       # Artifacts .pkg.tar.xz descargados (gitignored)
 ├── .cache-test/                  # Pruebas del sistema de caché (gitignored)
 ├── README.md
@@ -44,8 +55,11 @@ PrevTermuxPackage/
 | Comando | Descripción |
 |---------|-------------|
 | `list <pkg> [--refresh]` | Descubre versiones históricas + selector fzf + detalle |
-| `build <pkg> [--commit <sha>] [--refresh] [--heavy]` | Descarga release existente o dispara workflow GHA |
-| `subinstall [<pkg>|<file>]` | Extrae .pkg.tar.xz a `~/.local/opt/` + symlinks versionados |
+| `build <pkg> [--commit <sha>] [--refresh] [--heavy] [--subversioned]` | Detecta run exitoso/en curso, pregunta antes de relanzar; descarga release existente o dispara workflow. `--subversioned` → `jobs=subversioned` |
+| `subinstall [<pkg>|<file>]` | Descarga de GitHub (lista TODAS las versiones con fzf, luego elige subversion/normal) o extrae `.pkg.tar.xz` a `~/.local/opt/` + symlinks versionados |
+| `install <pkg> [<version>] [--arch <arch>]` | Instala build NORMAL con el gestor detectado (pacman/apt, sin `-y`); selecciona versión con fzf |
+| `switch [<pkg>]` | Cambia la versión subversionada activa: symlinks a `$PREFIX/bin`, marca `(actual)` |
+| `fetch <pkg> [version] [--arch <arch>] [--subversioned] [--out <dir>]` | Descarga del pool de la PrevTermux Store (`prev-termux-pool-<arch>` + `manifest.json`) |
 | `status [<pkg>]` | Últimos 20 runs del workflow con indicadores de color |
 | `cache info` / `cache clear [--all|<pkg>]` | Estadísticas / limpieza del caché persistente |
 | `help` | Ayuda |
@@ -57,9 +71,11 @@ PrevTermuxPackage/
 | `package_name` | — | string (requerido) |
 | `git_ref` | — | string (commit SHA de termux-packages) |
 | `architecture` | `aarch64` | aarch64, arm, i686, x86_64 |
-| `format` | `pacman` | pacman, debian |
+| `format` | `debian` | pacman, debian (el build SIEMPRE compila `.deb`; `deb2pkg.sh` convierte) |
 | `build_mode` | `fast` | fast (`-I`), full (`-F`) |
-| `heavy` | `false` | boolean (ZRAM 16GB + free disk) |
+| `heavy` | `false` | boolean (ZRAM 16GB + free disk para builds largos) |
+| `use_store` | `true` | boolean (reutiliza deps del PrevTermux Store) |
+| `jobs` | `both` | both, normal, subversioned (jobs a ejecutar; `timeout-minutes: 600`) |
 
 ### Contratos internos
 
@@ -76,16 +92,19 @@ PrevTermuxPackage/
 - **Descubrimiento con pickaxe**: `git log --all -G "TERMUX_PKG_VERSION=" --format="%H|%ci|%h" -- packages/<pkg>/build.sh` (usa `-G` no `-S`). `--format` va ANTES de `--`.
 - **Resolución de variables de build.sh**: `resolve_version_from_buildsh()` — parsea definiciones a tabla asociativa, resuelve `${VAR}`, `$VAR`, `${VAR%.*}`, `${VAR%%pattern}` recursivamente (máx 20 iteraciones). Duplicado en el step "Extract package version" del workflow (con `declare -A`).
 - **Compatibilidad legacy** (el núcleo del proyecto):
-  - Parches numerados `NNN-nombre.patch` en `patches/`, aplicados por `patch-build-system.sh` contra `scripts/` del build system moderno.
-  - Verificación de aplicación por marca: `grep -q 'Legacy compatibility: ...'` — los parches insertan comentarios `Legacy compatibility: ...` que sirven de marca idempotente.
-  - Normalización global de variables legacy en todos los `build.sh` (sed idempotente): `BLACKLISTED_ARCHES→EXCLUDED_ARCHES`, `DEBDIR→OUTPUT_DIR`, `MAKE_PROCESSES→PKG_MAKE_PROCESSES`, `NO_DEVELSPLIT→NO_STATICSPLIT`, `yes→true`/`no→false` (regex anclada `^\(TERMUX_PKG_[A-Z_]*\)=yes$`).
-- **Sparse checkout de master** (en GHA, no en local): `--depth=1 --filter=blob:none --sparse` + `sparse-checkout set scripts packages/termux-keyring packages/termux-elf-cleaner ndk-patches`; `build-package.sh` y `repo.json` via curl. Reemplaza TODO el build system del commit viejo por el moderno.
-- **Debug en CI**: patches 007/008/009 instrumentan con `DEBUG VARS`, `SED EXIT`, `PATCH EXIT`, `MARKER: >>>/<paso>`, `2>&1 | tee /tmp/cargo-install.log` + `PIPESTATUS[0]`. Logs efímeros (`err.log`, `gita_err*.log`) quedan en raíz (gitignored).
+  - **Build system vendered**: `build-system/` es byte-idéntico al upstream `de5ca479` salvo los archivos listados en `.fork-files` (~19 implementaciones directas con marca `# Legacy compatibility:`: 16 parches migrados 001–016, blindaje LLVM, hook del store, shim automake-N.N). `build-system/REVISION` guarda el SHA upstream; abort-on-conflict al actualizar.
+  - Verificación de aplicación por marca: `grep -qF 'Legacy compatibility: ...'` antes de copiar/aplicar (idempotencia).
+  - Normalización legacy en `scripts/normalize-legacy-builds.sh` (varias fases, sed idempotente): **FASE 1** renames (`BLACKLISTED_ARCHES→EXCLUDED_ARCHES`, `DEBDIR→OUTPUT_DIR`, `MAKE_PROCESSES→PKG_MAKE_PROCESSES`, `NO_DEVELSPLIT→NO_STATICSPLIT`, `=yes`→`=true`/`=no`→`=false`), URLs muertas (bintray/fossies) y checksums recomputados; **FASE 2** gnu89 bash; **FASE 2b/2c** `autoreconf -fi` (tar/util-linux).
+- **Preparación del build en GHA** (`gha-prepare.sh`): copia `build-system/` al checkout del paquete histórico + copia `store-lib.sh` + ejecuta `normalize-legacy-builds.sh`. El runtime **NO descarga master ni aplica parches**; `patches/` y `patch-build-system.sh` son REFERENCIA.
+- **PrevTermux Store**: `store-lib.sh` es hook en `termux_step_get_dependencies.sh` (consulta el pool `prev-termux-pool-<arch>` + `manifest.json` antes de recompilar una dep, también en `-F`/subversioned; caché del manifest por run); `store-publish.sh` publica deps solo `.deb` y objetivos `.deb` + `.pkg.tar.xz`.
+- **Debug en CI (histórico, en `patches/` REFERENCIA)**: los parches 007/008/009 instrumentaban con `DEBUG VARS`, `SED EXIT`, `PATCH EXIT`, `MARKER: >>>/<paso>`. Logs efímeros (`err.log`, `gita_err*.log`) quedan en raíz (gitignored).
 - **Subinstalación portable**: extracción con `tar --strip-components` (intenta 5, luego 4, luego sin strip) + symlinks `<bin>-<version>`.
 
-## Hallazgos de relocatabilidad (2026-07-31 — para la Fase 2: build versionado)
+## Hallazgos de relocatabilidad (2026-07-31 — Fase 2: build versionado)
 
-- **`TERMUX_PREFIX` se define en `scripts/properties.sh`** (línea 955-957): `TERMUX__PREFIX="$TERMUX__ROOTFS/..."` (canónico) + `TERMUX_PREFIX` (alias deprecado, sobrescrito incondicionalmente). Todas las sub-variables (`TERMUX__PREFIX__LIB_DIR`, `INCLUDE_DIR`, `CLASSICAL`, export `prefix`/`PREFIX` en setup_variables.sh:106-107) se derivan de `TERMUX__PREFIX`. Hay validators (`path_under_termux_rootfs`, `invalid_termux_prefix_paths`) y una función oficial `termux_build_props__set_termux_prefix_dir_and_sub_variables <prefix>`. Punto de inyección para el patch 010: properties.sh + neutralizar validators.
+> ✅ **RESUELTO (2026-08-09)**: la estrategia se implementó como implementación **vendered** `TERMUX_PREFIX_OVERRIDE` en `build-system/build-package.sh` (marca `# Legacy compatibility:`) — re-deriva el prefix ANTES de sourcear el `build.sh` — y se **validó en CI**: `zig` 0.15.2 y 0.16.0 subversionado VERDE (runs `31303490256` / `31303490320`, `jobs=subversioned`, `heavy=true`). Los hallazgos de abajo son el análisis empírico que justificó la estrategia.
+
+- **`TERMUX_PREFIX` se define en `scripts/properties.sh`** (línea 955-957): `TERMUX__PREFIX="$TERMUX__ROOTFS/..."` (canónico) + `TERMUX_PREFIX` (alias deprecado, sobrescrito incondicionalmente). Todas las sub-variables (`TERMUX__PREFIX__LIB_DIR`, `INCLUDE_DIR`, `CLASSICAL`, export `prefix`/`PREFIX` en setup_variables.sh:106-107) se derivan de `TERMUX__PREFIX`. Hay validators (`path_under_termux_rootfs`, `invalid_termux_prefix_paths`) y una función oficial `termux_build_props__set_termux_prefix_dir_and_sub_variables <prefix>`. Punto de inyección implementado: la implementación vendered `TERMUX_PREFIX_OVERRIDE` (re-deriva la raíz sin neutralizar validators).
 - **termux-elf-cleaner**: elimina `DT_RPATH` SIEMPRE; conserva `DT_RUNPATH` si `api_level >= 24` (default `TERMUX_PKG_API_LEVEL=24`). Se invoca desde `termux_step_elf_cleaner.sh` (masajea `./bin/*`, `./lib/*`, `./opt/*`) salvo `TERMUX_PKG_NO_ELF_CLEANER=true`.
 - **Runtime de Termux**: termux-app inyecta `LD_LIBRARY_PATH=$PREFIX/lib` y `LD_PRELOAD=libtermux-exec.so`. Precedencia del loader: `DT_RPATH` > `LD_LIBRARY_PATH` > `DT_RUNPATH`. Como termux no deja RPATH, un wrapper local con LD_LIBRARY_PATH antepuesto gana; patchelf `--set-rpath` genera RUNPATH que NO vence.
 - **zig resuelve su std-lib** por `ZIG_LIB_DIR` (env) o subiendo directorios desde el exe buscando `lib/zig/` — no usa RPATH. El wrapper `bin/zig` de 0.15.2 es un script proot con `$TERMUX_PREFIX/lib/zig/zig` hardcoded (causa del bug de subversionado).
@@ -96,8 +115,8 @@ PrevTermuxPackage/
 ## Observaciones
 
 - **Entorno**: desarrollado/ejecutado en Termux (Android). CLI local corre en Termux; builds pesados corren en runners GHA (`ubuntu-latest`, contenedor `ghcr.io/termux/package-builder`).
-- **Ramas**: `main` (estable) + `experiment/whack-a-mole-build-system` (experimental). Tag de prueba: `which-2.25-ec22dc1`.
-- **Estado actual**: bloqueado resolviendo exit 2 en `termux_step_make_install` (build `bat` commit 2018, run 30615771833). Parches 007-009 son instrumentación de debug — hay que limpiarlos al resolver.
-- **Tests de regresión** documentados en PROGRESS.md: `bat` (e4f21355), `which` (ec22dc1), `zig` (6bd499e).
-- **Formato por defecto**: pacman (`.pkg.tar.xz`). El soporte `--format` no existe en commits antiguos — por eso se usa build-package.sh de master.
+- **Ramas**: `main` (estable) + `experiment/whack-a-mole-build-system` (experimental). Tags de prueba: `which-2.25-ec22dc1`, `bash-5.2.26-e4f2135`, `tar-1.35-8ca9404`.
+- **Estado actual**: sistema vendered (`build-system/` byte-idéntico a `de5ca479` + ~19 impl. `# Legacy compatibility:`) + **PrevTermux Store** (pool por arquitectura) + **CLI rediseñada** (build/subinstall/install/switch/fetch). `zig` 0.15.2 y 0.16.0 subversionado **VERDE**. Pendiente: re-validar `bash@8ca9404` en CI (FASE 2c ya commiteada) y la regresión `bat@2f2adec`. Parches 007–009 (REFERENCIA) conservan instrumentación de debug pendiente de limpiar.
+- **Tests de regresión** documentados en PROGRESS-OLD_PKGS.md: `which@1fcb6e8`, `bash@e4f2135`, `tar@8ca9404`, `zig@0.15.2/0.16.0` (subversionado), `bat@2f2adec` (pendiente).
+- **Formato por defecto**: pacman (`.pkg.tar.xz`). El soporte `--format` no existe en commits antiguos — por eso el pipeline SIEMPRE compila `.deb` (formato universal) y `deb2pkg.sh` convierte a `.pkg.tar.xz`; el build system viene de `build-system/` vendered.
 - **Repositorio GitHub**: `Leonisaurov/PrevTermuxPackage` (de los logs de gita).

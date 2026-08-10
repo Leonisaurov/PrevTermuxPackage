@@ -48,6 +48,8 @@
 | `7466ada` | docs: PROGRESS-OLD_PKGS.md — log de progreso (build system propio, store, whack-a-mole, zig pendiente) |
 | `a11a65b` | fix: workflow build-subversioned con `success()` (anula skip propagado GHA en modo subversioned) |
 | `5545998` | feat: rediseño CLI prev-termux — build detecta runs, subinstall descarga de GitHub, install y switch nuevos |
+| `1c53a83` | docs: PROGRESS-OLD_PKGS — zig subversionado verde + rediseño CLI prev-termux |
+| `8c85754` | feat: prev-termux subinstall/install — selección de version con fzf (todas) y luego modo subversion/normal |
 
 ## 3. Estado CI verificado
 
@@ -96,6 +98,7 @@
 
 - **`build`**: detecta run EXITOSO / en CURSO (`gh run list` + `displayTitle "<pkg> @ <sha7>"`); pregunta si relanzar (acepta solo `y`/`Y`); `--subversioned` → `-f jobs=subversioned`.
 - **`subinstall`**: ahora es descargador de GitHub (además de archivo local); filtra tags normal/subversioned, elige por `createdAt` máximo, diálogo antes de descargar, descarga a `$TMPDIR` con `--clobber`, extrae con pkg/ver verificados.
+- **Selección de versiones (commit `8c85754`)**: `subinstall`/`install` listan **TODAS** las versiones del paquete con fzf (fallback menú numerado) y luego eligen el modo subversion/normal (solo se pregunta cuando existen ambos); `_artifact_version_for_pkg` hace cross-check por la izquierda (tolera versiones multi-guion de libedit, descarta colisiones python-numpy/libpng16/libc++).
 - **`install` (NUEVO)**: paquetes normales; detecta gestor pacman/apt (si hay ambos → pregunta); **SIN** `-y`/`--noconfirm`.
 - **`switch` (NUEVO)**: fzf o menú numerado entre versiones subversionadas instaladas, marca `(actual)`, symlinks de todos los binarios a `$PREFIX/bin`.
 - **`check_deps`** sin fzf obligatorio (fallback menú); **`_escape_regex`** + **`_artifact_version_for_pkg`** (cross-check por la izquierda: tolera versiones multi-guion de libedit, descarta colisiones python-numpy/libpng16/libc++); filtros jq escapados.
