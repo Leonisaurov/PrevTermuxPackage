@@ -107,3 +107,43 @@
 ### Lección nueva (whack-a-mole)
 
 - **Colisión de assets normal vs subversioned**: `deb2pkg.sh` nombra **igual** ambos artifacts (solo el tag distingue; `--skip-existing` dejaba la normal antigua) → resuelto descargando por el **tag correcto**.
+
+## 7. 2026-08-10 — Regresión completa VERDE (bash 5.3 + bat)
+
+### Estado CI verificado
+
+| Paquete @ git_ref | Versión | Resultado (ambos jobs) | Run | Notas |
+|---|---|---|---|---|
+| `bash@8ca9404` | bash 5.3 | ✅ VERDE | `31425439292` | Ambos jobs (normal + subversioned); artifacts `bash-5.3-aarch64.zip` y `bash-5.3-aarch64-subversioned.zip` subidos |
+| `bat@2f2adec` | 0.26.0 | ✅ VERDE | `31431231753` | Ambos jobs; artifacts `bat-0.26.0-aarch64.zip` y `bat-0.26.0-aarch64-subversioned.zip` subidos |
+
+- **Regresión del constructor COMPLETA**: `which@1fcb6e8`, `bash@e4f2135` (4.4), `tar@8ca9404`, `util-linux@8ca9404`, `bash@8ca9404` (5.3) y `bat@2f2adec` — todas en **ambos jobs (normal + subversioned)**; más `zig` 0.15.2/0.16.0 subversionado (runs `31303490256`/`31303490320`).
+- Logs en `$TMPDIR/gita-bash53-13.log` y `$TMPDIR/gita-bat-14.log`.
+
+### Fixes encadenados (`cfe8fbe` → `15009a8`)
+
+| Commit | Descripción |
+|--------|-------------|
+| `cfe8fbe` | **FASE 2d**: util-linux 2.40.2 — colisión `schedutils/sched_attr.h` con el sysroot del NDK r29 (API 24, `redefinition of 'sched_attr'`). Vendor del patch de master (`#ifndef __ANDROID__` + wrappers `*_compat` + `#define sched_setattr sched_setattr_compat`); guard `TERMUX_PKG_VERSION="2.40.2"`; heredoc **byte-idéntico** verificado contra el tarball real de kernel.org |
+| `ebfb81b` | Checksum bash-5.3: GNU **regeneró** el tarball (`62dd49c…` → `0d5cd869…`; evidencia upstream `95f4e38b51`, mismo SRCURL; verificado en 3 mirrors) |
+| `6e4cb10` | **FASE 2e**: gnu89 para bash 5.3 `mkbuiltins.c` (`'bool' cannot be defined via 'typedef'` en C23). Export CFLAGS + sed de `CCFLAGS_FOR_BUILD` en `termux_step_pre_configure`; guard `_MAIN_VERSION=5.3`, insertado **ANTES** del early-return `_PATCH_VERSION==0`; readline 8.3 comparte lookahead pero no se contamina |
+| `991b909` | Workflow `upload-artifact`: deps con `:` (epoch Debian, p.ej. `ca-certificates-java_1:...`) rompían `upload-artifact@v4` → `continue-on-error` + paso "Prepare artifact files" (filtra a `artifacts/`) |
+| `8402a31` | `store-publish`: skip de la **re-descarga post-subida** para assets con `:` (GitHub Releases permite subir pero **no re-descargar** por URL; integridad por sha256 local) |
+| `15009a8` | `termux_setup_rust`: normalización `TERMUX_RUST_VERSION="${TERMUX_RUST_VERSION##*+really}"` (semántica Debian: el toolchain REAL va tras `+really`; el reviewer detectó que `%%+*` era invertido para `1.90.0+really1.89.0`; srcurl upstream usa `##*y`). **Desbloqueó `bat`** |
+
+### Lecciones duras nuevas (whack-a-mole)
+
+- **NDK r29 redefine `sched_attr`**: el sysroot (API 24) ya define `struct sched_attr` → colisión con el `schedutils/sched_attr.h` del tarball de util-linux 2.40.2; fix vendered del patch de master (`#ifndef __ANDROID__` + `*_compat`), FASE 2d (`cfe8fbe`).
+- **Checksums regenerados (bash-5.3)**: GNU re-empaquetó `bash-5.3.tar.gz` (`62dd49c…`→`0d5cd869…`) — tercer caso tras foot (1.22.3/1.25.0) y ncurses; verificar en mirrors antes de commitear (`ebfb81b`).
+- **gnu89 mkbuiltins 5.3**: mismo patrón que bash 4.4 (FASE 2) pero el `build.sh` de 5.3 es **distinto** → FASE 2e nueva con guard `_MAIN_VERSION=5.3` antes del early-return `_PATCH_VERSION==0` (`6e4cb10`).
+- **`:` en upload-artifact y en store**: los epochs Debian rompen `upload-artifact@v4` (workflow `991b909`); en GitHub Releases se puede **subir** un asset con `:` pero **no re-descargarlo por URL** → skip de re-verificación con sha256 local (`8402a31`).
+- **rust `+really`**: el toolchain real es la parte TRAS el sufijo (`1.90.0+really1.89.0` instala 1.89.0); el patrón correcto es `##*+really` (el `%%+*` inicial era invertido; srcurl upstream usa `##*y`) (`15009a8`).
+
+### Pendientes actualizados
+
+- [x] ~~Re-validar `bash@8ca9404` (5.3)~~ — ✅ **COMPLETADO** (run `31425439292` verde).
+- [x] ~~Regresión `bat@2f2adec`~~ — ✅ **COMPLETADO** (run `31431231753` verde).
+- [ ] Deuda: **sanear `:` en nombres del pool** del lado consumidor (`store-lib.sh` / `prev-termux fetch`).
+- [ ] Deuda: limpiar debug de parches 007–009.
+- [ ] Versionar suite 28/28 en `tests/`.
+- [ ] Validar más paquetes históricos (2018–2023) para ampliar cobertura.
