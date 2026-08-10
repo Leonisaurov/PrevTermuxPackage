@@ -307,6 +307,17 @@ if [ "${#UPLOAD_ASSETS[@]}" -gt 0 ]; then
 	for asset in "${UPLOAD_ASSETS[@]}"; do
 		name="$(basename "$asset")"
 		expected="$(sha256sum "$asset" | cut -d' ' -f1)"
+		# Assets con ':' en el nombre (epoch Debian, p.ej.
+		# ca-certificates-java_1:2025.05.20_all.deb) se pueden SUBIR a GitHub
+		# Releases (--clobber) pero NO re-descargar por URL: el ':' rompe la URL
+		# del asset y `gh release download --pattern` falla. El manifest usa el
+		# sha256 calculado LOCAL del archivo (arriba), así que la integridad
+		# queda garantizada sin re-descargar; se hace skip solo en la
+		# re-verificación.
+		if [[ "$name" == *:* ]]; then
+			echo "OK    '$name' verificado post-subida (skip re-descarga; nombre con ':' no re-descargable por GitHub Releases, sha256=$expected)"
+			continue
+		fi
 		if ! gh release download "$POOL_TAG" -R "$REPO" --pattern "$name" --dir "$VERIFY_DIR" >/dev/null 2>&1; then
 			echo "Error: no se pudo re-descargar '$name' para verificar post-subida" >&2
 			VERIFY_OK=0
