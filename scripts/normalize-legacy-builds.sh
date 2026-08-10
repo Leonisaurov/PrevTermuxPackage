@@ -259,6 +259,56 @@ D
         "$f" || true
 done || true
 
+# FASE 2e: bash 5.3 (commit 8ca9404, 2023) — fix gnu89 para build-tools HOST.
+# Run CI 31359337356 fallo en el build-tool host mkbuiltins.o con:
+#   ../bashansi.h:44:23: error: 'bool' cannot be defined via 'typedef'
+#     typedef unsigned char bool;
+#   note: 'bool' is a keyword with '-std=c23' onwards
+#   make[1]: *** [Makefile:231: mkbuiltins.o] Error 1
+# Mismo patron que bash 4.4 (FASE 2): los build-tools HOST (mkbuiltins.o y
+# otros) los compila el gcc del host con su variable CCFLAGS_FOR_BUILD, NO con
+# CFLAGS. En 4.4 el fallo eran los prototipos K&R; en 5.3 es el typedef de bool
+# (C23 lo convierte en keyword). El make[1] del error es el sub-make de
+# builtins/: la regla "Makefile:231" es builtins/Makefile.in L231
+# "  $(CC_FOR_BUILD) -c $(CCFLAGS_FOR_BUILD) $<" (verificado en el tarball
+# bash-5.3.tar.gz, hash 0d5cd869). El root Makefile.in L167 y
+# builtins/Makefile.in L106 tienen la MISMA forma que 4.4
+# "CCFLAGS_FOR_BUILD = $(BASE_CCFLAGS) $(CPPFLAGS_FOR_BUILD) $(CFLAGS_FOR_BUILD)",
+# asi que el sed de la FASE 2 (anadir -std=gnu89 tras "CCFLAGS_FOR_BUILD =")
+# aplica igual en ambos archivos: el Makefile raiz cubre mksyntax/mksignames y
+# el de builtins/ compila mkbuiltins.o con SU propio CCFLAGS_FOR_BUILD.
+# NO se puede anclar solo en pre_configure: bash 5.3 y readline 8.3
+# (packages/readline/build.sh@8ca9404) tienen termux_step_pre_configure() { con
+# el MISMO lookahead de 3 lineas (apertura + "(( _PATCH_VERSION == 0 )) &&
+# return" + "local PATCH_NUM PATCHFILE"), asi que un sed generico inyectaria el
+# fix en readline (que NO lo necesita: readline no compila mkbuiltins ni usa
+# CCFLAGS_FOR_BUILD para su Makefile). Por eso esta fase va FUERA del while de
+# la FASE 1/2/2b/2c (como la FASE 2d) con guard a nivel de archivo: el ancla
+# '_MAIN_VERSION=5.3' es unico de packages/bash/build.sh@8ca9404 (git grep en
+# 8ca9404: solo bash; readline usa _MAIN_VERSION=8.3) y el sed interno exige el
+# lookahead "(( _PATCH_VERSION == 0 )) && return" propio de bash 5.x.
+# El export CFLAGS va ANTES del "(( _PATCH_VERSION == 0 )) && return": bash 5.3
+# trae _PATCH_VERSION=0, que hace early-return de pre_configure; si el fix
+# quedara despues, nunca se ejecutaria. pre_configure corre con cwd=srcdir
+# antes de configure (los Makefile.in ya existen en el tarball). Idempotente:
+# tras la 1a pasada la linea 2 del pre_configure es "export CFLAGS=..." y el
+# guard de archivo "! grep -qF" deja de matchear en una 2a pasada.
+BASH53_BUILD_SH="$REPO_DIR/packages/bash/build.sh"
+if [ -f "$BASH53_BUILD_SH" ] \
+    && grep -qF '_MAIN_VERSION=5.3' "$BASH53_BUILD_SH" \
+    && grep -qF 'termux_step_pre_configure() {' "$BASH53_BUILD_SH" \
+    && ! grep -qF 'export CFLAGS="$CFLAGS -std=gnu89"' "$BASH53_BUILD_SH"; then
+    sed -i \
+        -e '/^termux_step_pre_configure() {$/{
+N
+/^termux_step_pre_configure() {\n[[:space:]]*(( _PATCH_VERSION == 0 )) && return/s@^termux_step_pre_configure() {\n@termux_step_pre_configure() {\nexport CFLAGS="$CFLAGS -std=gnu89"\nsed -i "/ -std=gnu89/! s|^CCFLAGS_FOR_BUILD *=|\& -std=gnu89|" Makefile.in builtins/Makefile.in\n@
+P
+D
+}' \
+        "$BASH53_BUILD_SH" || true
+    echo "[normalize-legacy-builds] FASE 2e: bash 5.3 gnu89 inyectado en termux_step_pre_configure."
+fi
+
 # FASE 2d: util-linux 2.40.2 (commit 8ca9404, 2023) — fix colisión de
 # schedutils/sched_attr.h con el sysroot del NDK r29 (API 24). Run CI
 # 31353795462 fallo en el compile de util-linux (tras el autoreconf -fi de la
