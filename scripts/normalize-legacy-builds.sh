@@ -246,4 +246,82 @@ D
         "$f" || true
 done || true
 
+# FASE 2d: util-linux 2.40.2 (commit 8ca9404, 2023) — fix colisión de
+# schedutils/sched_attr.h con el sysroot del NDK r29 (API 24). Run CI
+# 31353795462 fallo en el compile de util-linux (tras el autoreconf -fi de la
+# FASE 2c, que SÍ completó) con:
+#   schedutils/sched_attr.h:87:8: error: redefinition of 'sched_attr'
+#     /sysroot/usr/include/linux/sched/types.h:12:8: note: previous definition
+#   schedutils/sched_attr.h:108:12: error: static declaration of
+#     'sched_setattr' follows non-static declaration
+#     /sysroot/usr/include/sched.h:245:5: note: ... __INTRODUCED_IN(37)
+#   (idem para sched_getattr)
+# Causa raiz: el tarball de util-linux 2.40.2 trae su propio
+# schedutils/sched_attr.h (struct sched_attr + wrappers estaticos
+# sched_setattr/sched_getattr via syscall, para kernels viejos), pero el
+# sysroot bionic del NDK r29 (API 24) AHORA declara esas mismas APIs en
+# linux/sched/types.h y sched.h con __INTRODUCED_IN(37): el struct colisiona
+# por redefinicion y las funciones estaticas siguen a una declaracion
+# no-estatica. No se puede borrar el header (chrt.c lo incluye) ni desactivar
+# solo el struct (uclampset.c usa los wrappers SIN guard #ifdef; master los
+# mantiene). Master (de5ca479, packages/util-linux/schedutils-sched_attr.h.patch,
+# aplicado sobre la MISMA util-linux 2.40.2) resuelve el bloqueo envolviendo el
+# struct en "#ifndef __ANDROID__" (el sysroot ya lo define) y renombrando los
+# wrappers a *_compat con "#define sched_setattr sched_setattr_compat" para que
+# las llamadas de chrt/uclampset no colisionen con la declaracion de bionic ni
+# linkeen contra el simbolo de libc introducido en API 37. Se VENDOREA ese
+# patch byte-identico dentro del arbol del paquete (packages/util-linux/); el
+# termux_step_patch_package del build system vendered lo aplica en el source
+# extraido con "patch --batch -p1" (normaliza la cabecera "--- ../cache/..."
+# a "--- ./..." automaticamente). No colisiona con los 13 patches historicos
+# (toca solo schedutils/sched_attr.h) y se aplica ANTES del autoreconf -fi
+# inyectado en FASE 2c (autoreconf no regenera headers planos). Guard de
+# version: solo se escribe si el build.sh es util-linux 2.40.2@8ca9404
+# (TERMUX_PKG_VERSION="2.40.2" + comentario prlimit unico); otros commits
+# historicos con util-linux 2.32.1 (p.ej. e4f2135) NO reciben el patch (su
+# sched_attr.h no colisiona y el patch no aplicaria). Idempotente: no escribe
+# si el archivo ya existe (2a pasada = no-op).
+UL_BUILD_SH="$REPO_DIR/packages/util-linux/build.sh"
+if [ -f "$UL_BUILD_SH" ] \
+    && grep -qF 'TERMUX_PKG_VERSION="2.40.2"' "$UL_BUILD_SH" \
+    && grep -qF '#prlimit() is only available in 64-bit bionic.' "$UL_BUILD_SH" \
+    && [ ! -f "$REPO_DIR/packages/util-linux/schedutils-sched_attr.h.patch" ]; then
+    cat > "$REPO_DIR/packages/util-linux/schedutils-sched_attr.h.patch" <<'SCHED_ATTR_PATCH_EOF'
+diff -u -r ../cache/util-linux-2.40.2/schedutils/sched_attr.h ./schedutils/sched_attr.h
+--- ../cache/util-linux-2.40.2/schedutils/sched_attr.h	2024-01-31 10:02:15.742809948 +0000
++++ ./schedutils/sched_attr.h	2025-08-07 22:32:31.062558966 +0000
+@@ -84,6 +84,7 @@
+ #if defined (__linux__) && !defined(HAVE_SCHED_SETATTR) && defined(SYS_sched_setattr)
+ # define HAVE_SCHED_SETATTR
+ 
++#ifndef __ANDROID__
+ struct sched_attr {
+ 	uint32_t size;
+ 	uint32_t sched_policy;
+@@ -104,16 +105,19 @@
+ 	uint32_t sched_util_min;
+ 	uint32_t sched_util_max;
+ };
++#endif
+ 
+-static int sched_setattr(pid_t pid, const struct sched_attr *attr, unsigned int flags)
++static int sched_setattr_compat(pid_t pid, const struct sched_attr *attr, unsigned int flags)
+ {
+ 	return syscall(SYS_sched_setattr, pid, attr, flags);
+ }
+ 
+-static int sched_getattr(pid_t pid, struct sched_attr *attr, unsigned int size, unsigned int flags)
++static int sched_getattr_compat(pid_t pid, struct sched_attr *attr, unsigned int size, unsigned int flags)
+ {
+ 	return syscall(SYS_sched_getattr, pid, attr, size, flags);
+ }
++#define sched_setattr sched_setattr_compat
++#define sched_getattr sched_getattr_compat
+ #endif
+ 
+ /* the SCHED_DEADLINE is supported since Linux 3.14
+SCHED_ATTR_PATCH_EOF
+    echo "[normalize-legacy-builds] Vendored util-linux schedutils-sched_attr.h.patch (fix sched_attr vs NDK r29)."
+fi
+
 echo "=== [normalize-legacy-builds] Done. build.sh normalizados. ==="
