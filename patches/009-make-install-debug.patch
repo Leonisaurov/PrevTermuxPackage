@@ -1,19 +1,6 @@
 --- a/scripts/build/termux_step_make_install.sh
 +++ b/scripts/build/termux_step_make_install.sh
-@@ -22,6 +22,12 @@
- 			make -j 1 ${TERMUX_PKG_EXTRA_MAKE_ARGS} ${TERMUX_PKG_MAKE_INSTALL_TARGET}
- 		fi
- 	elif test -f Cargo.toml; then
-+		# DEBUG-MI: instrumentación para capturar el stderr REAL del fallo silencioso (exit 2)
-+		echo "DEBUG-MI: Cargo.toml detectado, path=$(pwd)"
-+		echo "DEBUG-MI: command -v cargo = $(command -v cargo 2>&1 || echo 'NOT FOUND')"
-+		echo "DEBUG-MI: CARGO_TARGET_NAME=${CARGO_TARGET_NAME-UNSET}"
-+		echo "DEBUG-MI: TERMUX_RUST_VERSION=${TERMUX_RUST_VERSION-UNSET}"
-+		echo "DEBUG-MI: RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN-UNSET}"
- 		if [[ -z "$(command -v cargo)" ]]; then
- 			# Legacy compatibility: old build.sh files don't call termux_setup_rust
- 			# (it was automatic until commit 030d411c9b, Oct 2025)
-@@ -31,7 +37,10 @@
+@@ -31,7 +31,10 @@
  		if [[ "$TERMUX_DEBUG_BUILD" == "true" ]]; then
  			CARGO_DEBUG_FLAG='--debug'
  		fi
@@ -25,17 +12,13 @@
  			--jobs $TERMUX_PKG_MAKE_PROCESSES \
  			--path . \
  			--force \
-@@ -40,7 +49,12 @@
+@@ -40,7 +43,9 @@
  			--target $CARGO_TARGET_NAME \
  			--root $TERMUX_PREFIX \
  			$CARGO_DEBUG_FLAG \
 -			$TERMUX_PKG_EXTRA_CONFIGURE_ARGS
 +			$TERMUX_PKG_EXTRA_CONFIGURE_ARGS 2>&1 | tee "${TERMUX_PKG_TMPDIR:-$TMPDIR}/cargo-install.log"; exit ${PIPESTATUS[0]} ) || {
-+			echo "DEBUG-MI: cargo install FALLÓ con exit $?"
-+			echo "DEBUG-MI: Últimas 40 líneas del stderr:"
-+			tail -40 "${TERMUX_PKG_TMPDIR:-$TMPDIR}/cargo-install.log" 2>/dev/null
 +			# no exit aquí - deja que el script continúe y falle naturalmente con set -e
 +		}
  	fi
  }
- 

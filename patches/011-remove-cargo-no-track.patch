@@ -5,10 +5,10 @@
  		fi
  	elif test -f Cargo.toml; then
 +		# Legacy compatibility: remove --no-track for old cargo toolchains
- 		# DEBUG-MI: instrumentación para capturar el stderr REAL del fallo silencioso (exit 2)
- 		echo "DEBUG-MI: Cargo.toml detectado, path=$(pwd)"
- 		echo "DEBUG-MI: command -v cargo = $(command -v cargo 2>&1 || echo 'NOT FOUND')"
-@@ -45,7 +46,6 @@
+ 		if [[ -z "$(command -v cargo)" ]]; then
+ 			# Legacy compatibility: old build.sh files don't call termux_setup_rust
+ 			# (it was automatic until commit 030d411c9b, Oct 2025)
+@@ -39,7 +40,6 @@
  			--path . \
  			--force \
  			--locked \

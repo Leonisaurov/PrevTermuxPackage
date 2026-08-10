@@ -1,3 +1,21 @@
+# =============================================================================
+# DESCARTADO / DISCARDED (2026-08-10)
+# =============================================================================
+# Este parche era 100% instrumentación de DEBUG: insertaba marcadores
+# "MARKER: >>>/<paso>" alrededor de los pasos del build (setup_toolchain,
+# patch_package, configure, make, make_install, ...) para diagnosticar el
+# antiguo "exit 2 silencioso en termux_step_make_install".
+#
+# No aporta ninguna lógica funcional (solo `echo "MARKER: ..."`), y quedó
+# obsoleto al resolver la causa raíz (set -euo pipefail + pipelines sobre
+# archivos inexistentes; ver parches 003/005 y AGENTS.md "Lecciones duras").
+# El build system VENDERED (build-system/build-package.sh) NO contiene estos
+# marcadores.
+#
+# Se conserva el contenido original abajo como registro histórico. En runtime
+# este parche NO se aplica (patches/ es REFERENCIA). Si se re-aplicara, solo
+# añadiría los echoes MARKER — inofensivo pero ruidoso; no hacerlo.
+# =============================================================================
 --- a/build-package.sh
 +++ b/build-package.sh
 @@ -759,28 +759,48 @@

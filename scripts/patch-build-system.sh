@@ -62,33 +62,34 @@ fi
 # Los patches viejos tienen headers "--- ../bat-0.7.1/Cargo.toml"; BusyBox patch
 # falla buscando "bat-0.7.1/Cargo.toml" tras la extracción plana. GNU patch lo
 # resuelve por fallback, pero BusyBox no, así que normalizamos antes de aplicar.
-if ! grep -qF 'DEBUG: PATCH NORMALIZADO PARA' "$REPO_DIR/scripts/build/termux_step_patch_package.sh"; then
+if ! grep -qF 'Legacy compatibility: normalize diffs from old packages' "$REPO_DIR/scripts/build/termux_step_patch_package.sh"; then
     echo "[7/17] Aplicando parche patch_package: normalizar rutas de patches legacy"
     patch -p1 -d "$REPO_DIR" < "$PATCHES_DIR/007-patch-package-normalize-paths.patch"
 else
     echo "[7/17] Parche patch_package ya aplicado, saltando"
 fi
 
-# 8. Parche build-package.sh (debug post-patch con marcadores)
-# Patch 008 inserta marcadores "MARKER: >>>/<paso>" alrededor de los pasos del
-# build para identificar cuál falla con exit 2 después de termux_step_patch_package.
-if ! grep -qF 'MARKER: >>> patch_package' "$REPO_DIR/build-package.sh"; then
-    echo "[8/17] Aplicando parche build-package: marcadores post-patch"
-    patch -p1 -d "$REPO_DIR" < "$PATCHES_DIR/008-post-patch-debug.patch"
-else
-    echo "[8/17] Parche build-package ya aplicado, saltando"
-fi
+# 8. Parche build-package.sh — DESCARTADO.
+# El patch 008 era 100% debug (solo echo "MARKER: >>>/<paso>" alrededor de los
+# pasos del build) para diagnosticar el exit 2 tras termux_step_patch_package.
+# Resuelto el exit 2 (set -euo pipefail + pipelines sobre archivos inexistentes;
+# ver parches 003/005), el parche quedó obsoleto y se marcó DESCARTADO en
+# patches/008-post-patch-debug.patch (2026-08-10). NO se aplica: solo añadiría
+# ruido de logs al build-package.sh. El build system vendered ya no lleva estos
+# marcadores.
+echo "[8/17] Parche build-package 008 DESCARTADO (100% debug), saltando"
 
-# 9. Parche make_install.sh (debug: capturar stderr REAL del cargo install)
+# 9. Parche make_install.sh (capturar stderr REAL del cargo install)
 # El run 30615771833 confirmó que el exit 2 ocurre en termux_step_make_install
 # sin output. El patch 009 envuelve el cargo install con "2>&1 | tee + PIPESTATUS"
 # para que el stderr real quede en ${TERMUX_PKG_TMPDIR:-$TMPDIR}/cargo-install.log
-# y, si falla, se impriman las últimas 40 líneas antes de continuar (el fallo natural sigue).
-if ! grep -qF 'DEBUG-MI: Cargo.toml detectado' "$REPO_DIR/scripts/build/termux_step_make_install.sh"; then
-    echo "[9/17] Aplicando parche make_install: debug stderr de cargo install"
+# y se preserve el exit real de cargo (PIPESTATUS[0]). El fail-fast real llega
+# con el parche 015 (termux_error_exit).
+if ! grep -qF '2>&1 | tee "${TERMUX_PKG_TMPDIR:-$TMPDIR}/cargo-install.log"' "$REPO_DIR/scripts/build/termux_step_make_install.sh"; then
+    echo "[9/17] Aplicando parche make_install: capturar stderr de cargo install"
     patch -p1 -d "$REPO_DIR" < "$PATCHES_DIR/009-make-install-debug.patch"
 else
-    echo "[9/17] Parche make_install debug ya aplicado, saltando"
+    echo "[9/17] Parche make_install ya aplicado, saltando"
 fi
 
 # 10. Normalizar variables legacy en TODOS los build.sh (idempotente)
