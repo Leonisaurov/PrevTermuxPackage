@@ -279,13 +279,28 @@ jobs:
       # Antes de crear release, por si algo falla. Sube los .deb originales
       # Y los .pkg.tar.xz convertidos por deb2pkg.sh.
       # Nombre del artifact único del job build-normal (sin sufijo).
+      # NOTA: solo se suben archivos cuyo nombre NO contenga ':' — los .deb de
+      # deps con epoch Debian (p.ej. 'ca-certificates-java_1:2025.05.20_all.deb')
+      # llevan ':' y upload-artifact@v4 los rechaza (run 31369689469). Además el
+      # paso es de diagnóstico: continue-on-error=true garantiza que si falla,
+      # el release y el pool del store (entregables reales) se ejecuten igual.
+      - name: Prepare artifact files
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          shopt -s nullglob
+          for f in termux-packages/output/*.pkg.tar.* termux-packages/output/*.deb; do
+            base="$(basename "$f")"
+            if [[ "$base" != *:* ]]; then
+              cp "$f" artifacts/
+            fi
+          done
       - name: Upload artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${{ inputs.architecture }}
-          path: |
-            termux-packages/output/*.pkg.tar.*
-            termux-packages/output/*.deb
+          path: artifacts/
           if-no-files-found: error
 
       # ── 7. Generar tag para el release ──
@@ -580,13 +595,26 @@ jobs:
       # ── 6. Subir artifact (ambos formatos, sufijo -subversioned) ──
       # Sube los .deb originales Y los .pkg.tar.xz convertidos por deb2pkg.sh.
       # Nombre del artifact único del job build-subversioned (sufijo -subversioned).
+      # NOTA: solo archivos sin ':' en el nombre (deps con epoch Debian rompen
+      # upload-artifact@v4); continue-on-error=true para que un fallo aquí no
+      # bloquee el release ni el pool del store.
+      - name: Prepare artifact files
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          shopt -s nullglob
+          for f in termux-packages/output/*.pkg.tar.* termux-packages/output/*.deb; do
+            base="$(basename "$f")"
+            if [[ "$base" != *:* ]]; then
+              cp "$f" artifacts/
+            fi
+          done
       - name: Upload artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.package_name }}-${{ steps.get_version.outputs.package_version }}-${{ inputs.architecture }}-subversioned
-          path: |
-            termux-packages/output/*.pkg.tar.*
-            termux-packages/output/*.deb
+          path: artifacts/
           if-no-files-found: error
 
       # ── 7. Generar tag para el release (sufijo -subversioned) ──
