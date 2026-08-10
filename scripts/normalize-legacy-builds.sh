@@ -144,6 +144,18 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     # CI "Wrong checksum ... 442a42d5") y bash@8ca9404 (foot 1.22.3, run CI
     # 31291105922 "Wrong checksum ... 1c9f09c1"). Idempotente: el sed no toca
     # nada si el SHA historico ya no esta presente.
+    # Legacy compatibility: GNU REGENERO el empaquetado gzip de bash-5.3.tar.gz
+    # (hash 0d5cd869 verificado en 3 mirrors distintos -- mirrors.kernel.org,
+    # ftpmirror.gnu.org, mirror.csclub.uwaterloo.ca -- run CI 31357320573 de
+    # bash@8ca9404: "Wrong checksum ... Expected 62dd49c ... Actual 0d5cd869").
+    # Mismo caso que foot/codeberg y ncurses: mismo contenido, gzip regenerado.
+    # El commit upstream 95f4e38b51 (bump 5.3.3) confirma el cambio con el mismo
+    # SRCURL bash-${_MAIN_VERSION}.tar.gz: "the checksum of the base release
+    # archive changed for some reason". RIESGO de contenido: no se pudo comparar
+    # byte-a-byte con el tarball historico (62dd49c, no disponible en cache),
+    # pero upstream acepto el nuevo hash sin cambios en el build.sh ni patches,
+    # y el tar es valido (1603 entradas bajo bash-5.3/). Idempotente: el sed no
+    # toca nada si el SHA historico ya no esta presente.
     # FASE 1: normalizacion global linea a linea.
     sed -i \
         -e 's/TERMUX_PKG_BLACKLISTED_ARCHES=/TERMUX_PKG_EXCLUDED_ARCHES=/g' \
@@ -157,6 +169,7 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
         -e 's|https://fossies\.org/linux/misc/rxvt-unicode-\${TERMUX_PKG_VERSION\[1\]}\.tar\.bz2|https://deb.debian.org/debian/pool/main/r/rxvt-unicode/rxvt-unicode_${TERMUX_PKG_VERSION[1]}.orig.tar.bz2|g' \
         -e 's|442a42d576ec72dd50f2d3faea8a664230a47bac79dc1eb6e7c9125ee76c130f|ee9d0e51295945157ecb33119cb2c79b276093d0fd342d959d78d772d505571c|g' \
         -e 's|1c9f09c119c5b24bd1934ce515e70f402b7d1b2c55f8218a16eddaa26e3f6fb0|2ac8ac8fb7646ac8d370dfc26bda2831ee951b4608d8783e9ec385a1b0ca3ff0|g' \
+        -e 's|62dd49c44c399ed1b3f7f731e87a782334d834f08e098a35f2c87547d5dbb269|0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba|g' \
         -e 's|--with-pkg-config-libdir=\$PKG_CONFIG_LIBDIR|--with-pkg-config-libdir=\$TERMUX_PREFIX/lib/pkgconfig|' \
         -e '/^TERMUX_PKG_DEPENDS="termux-am"$/d' \
         -e 's/termux-am-socket ([^)]*), //g' \
