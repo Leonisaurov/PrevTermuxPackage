@@ -131,6 +131,13 @@ store_try_fetch() {
 	[ -n "$sha256" ] && [ -n "$asset" ] || return 1
 	# Defensa: solo basename (el manifest nunca debe aportar un path)
 	asset="$(basename "$asset")"
+	# Legacy compatibility: epoch Debian en el nombre del asset (p.ej.
+	# ca-certificates-java_1:2025.05.20_all.deb). store-publish.sh normaliza
+	# ':' → '-' en el pool, pero si un manifest legacy/manual trae ':' el ':' rompe
+	# la URL (store_asset_url) y curl falla silenciosamente → fallback al repo
+	# oficial/build local. Se aplica el MISMO saneo aquí (idempotente; el match
+	# del manifest es por .ver, nunca por nombre).
+	asset="${asset//:/-}"
 
 	# 3. Descargar el .deb y verificar sha256 (caché local del .deb incluida)
 	mkdir -p "$store_dir"

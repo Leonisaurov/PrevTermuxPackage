@@ -199,6 +199,14 @@ for deb in "${DEBS[@]}"; do
 	ASSET="${PKG}_${VER}_${DEB_ARCH}"
 	[ "$MODE" = "subversioned" ] && ASSET="${ASSET}_subversioned"
 	ASSET="${ASSET}.deb"
+	# Legacy compatibility: epoch Debian en VER (p.ej. ca-certificates-java_1:2025.05.20)
+	# — GitHub Releases permite SUBIR assets con ':' pero NO re-descargarlos por URL
+	# (el ':' rompe la URL del asset y `gh release download --pattern` falla). Se
+	# normaliza ':' → '-' en el nombre del POOL (asset y pkg_tar derivado) para que
+	# consumidores (store-lib.sh / prev-termux fetch) puedan descargarlos; el match
+	# del manifest es por .ver (con epoch, intacto), nunca por nombre. Idempotente:
+	# sin ':' el valor no cambia.
+	ASSET="${ASSET//:/-}"
 
 	PKG_TAR=""
 	PKG_TAR_SHA=""
@@ -307,13 +315,13 @@ if [ "${#UPLOAD_ASSETS[@]}" -gt 0 ]; then
 	for asset in "${UPLOAD_ASSETS[@]}"; do
 		name="$(basename "$asset")"
 		expected="$(sha256sum "$asset" | cut -d' ' -f1)"
-		# Assets con ':' en el nombre (epoch Debian, p.ej.
-		# ca-certificates-java_1:2025.05.20_all.deb) se pueden SUBIR a GitHub
-		# Releases (--clobber) pero NO re-descargar por URL: el ':' rompe la URL
-		# del asset y `gh release download --pattern` falla. El manifest usa el
-		# sha256 calculado LOCAL del archivo (arriba), así que la integridad
-		# queda garantizada sin re-descargar; se hace skip solo en la
-		# re-verificación.
+		# Guard defensivo: los nombres de asset del pool se normalizan al
+		# construirlos (epoch Debian ':' → '-', ver sección 3), así que aquí no
+		# debería llegar ningún nombre con ':'. Se conserva el skip por si un
+		# pool subido manualmente/legacy trae ':' (GitHub Releases deja SUBIR
+		# assets con ':' pero NO re-descargarlos por URL; el manifest usa el
+		# sha256 local, así que la integridad queda garantizada sin
+		# re-descargar).
 		if [[ "$name" == *:* ]]; then
 			echo "OK    '$name' verificado post-subida (skip re-descarga; nombre con ':' no re-descargable por GitHub Releases, sha256=$expected)"
 			continue

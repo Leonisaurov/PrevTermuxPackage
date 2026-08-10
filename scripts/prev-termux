@@ -1589,7 +1589,7 @@ cmd_fetch() {
         count="$(printf '%s' "$entries" | jq 'length')"
         if [[ "$count" -gt 1 ]]; then
             info "Varias versiones de '${pkg}' disponibles en el pool (mode=${mode}):"
-            printf '%s\n' "$entries" | jq -r '.[] | "  " + .ver + "  " + .asset'
+            printf '%s\n' "$entries" | jq -r '.[] | "  " + .ver + "  " + (.asset | gsub(":"; "-"))'
             rm -rf "$tmpdir"
             die "Especifica la versión: prev-termux fetch ${pkg} <version> [--arch ${arch}]"
         fi
@@ -1606,6 +1606,12 @@ cmd_fetch() {
 
     local asset sha256 ver_disp
     asset="$(printf '%s' "$entry" | jq -r '.asset // ""')"
+    # Legacy compatibility: epoch Debian en el nombre del asset (p.ej.
+    # ca-certificates-java_1:2025.05.20_all.deb). store-publish.sh normaliza
+    # ':' → '-' en el pool; aquí se aplica el MISMO saneo para tolerar manifests
+    # legacy/manuales ('gh release download --pattern' falla con ':' en el
+    # nombre). Idempotente; el match del manifest es por .ver.
+    asset="${asset//:/-}"
     sha256="$(printf '%s' "$entry" | jq -r '.sha256 // ""')"
     ver_disp="$(printf '%s' "$entry" | jq -r '.ver // ""')"
     if [[ -z "$asset" || -z "$sha256" ]]; then
@@ -1633,6 +1639,8 @@ cmd_fetch() {
     # ── 5. .pkg.tar.xz si es paquete objetivo (campo pkg_tar) ──
     local pkg_tar pkg_tar_sha
     pkg_tar="$(printf '%s' "$entry" | jq -r '.pkg_tar // ""')"
+    # Mismo saneo ':' → '-' que el .deb (pkg_tar deriva del nombre del asset)
+    pkg_tar="${pkg_tar//:/-}"
     pkg_tar_sha="$(printf '%s' "$entry" | jq -r '.pkg_tar_sha256 // ""')"
     if [[ -n "$pkg_tar" && -n "$pkg_tar_sha" ]]; then
         info "Paquete objetivo — descargando ${pkg_tar}..."
