@@ -407,4 +407,57 @@ SCHED_ATTR_PATCH_EOF
     echo "[normalize-legacy-builds] Vendored util-linux schedutils-sched_attr.h.patch (fix sched_attr vs NDK r29)."
 fi
 
+# FASE 2f: coreutils 9.1 (commit f5c8c3d, 2023) — fix sig2str/str2sig sin
+# declaracion en bionic/Android. Run CI 31446877038 de neofetch@f5c8c3d
+# (build -F, dependencia coreutils) fallo en el compile de src/timeout.c y
+# src/operand2sig.c (single-binary) con:
+#   src/timeout.c:229:15: error: call to undeclared function 'sig2str'; ISO
+#     C99 and later do not support implicit function declarations
+#   src/operand2sig.c:78:13: error: 'str2sig' undeclared
+#   src/operand2sig.c:86:21: error: 'sig2str' undeclared
+# Causa raiz: coreutils 9.1 (NO 8.30 como se presumio; TERMUX_PKG_VERSION
+# del arbol f5c8c3d = 9.1) llama a sig2str()/str2sig() (API de glibc
+# declarada en <string.h> bajo _GNU_SOURCE) que bionic NO implementa ni
+# declara (el configure reporta "checking for sig2str... no"). El gnulib de
+# 9.1 SI compila la implementacion sustitutiva (en el log del run aparece
+# "CC lib/libcoreutils_a-sig2str.o") pero la DECLARACION no llega a los
+# .c de src/ (ni via string.h ni via un include propio), y clang moderno
+# (C99+, default gnu17 del NDK r29) convierte la llamada implicita en error
+# fatal -Wimplicit-function-declaration. Master (de5ca479, coreutils 9.11)
+# compila sin ningun shim: su gnulib nuevo ya declara sig2str/str2sig
+# correctamente (git grep 'sig2str' en de5ca479 packages/ = vacio: termux
+# nunca necesito parche; el fix 9.1->9.2 fue solo bump de version).
+# Fix: -std=gnu89 (patron AGENTS.md "codigo C de 2018 falla con C23", ya
+# usado para bash 4.4/5.3 en FASE 2/2e): en gnu89 las llamadas a funciones
+# sin declarar son warning (no error) y el link resuelve contra el
+# lib/sig2str.o ya compilado por gnulib. NO basta CFLAGS a top-level del
+# build.sh (se pierde: clobbered por el setup del toolchain, leccion
+# AGENTS.md) -> se exporta DENTRO de termux_step_pre_configure como 1a
+# linea del body (corre tras el setup del toolchain y antes de configure).
+# Guard a nivel de archivo (patron FASE 2e): solo se toca
+# packages/coreutils/build.sh y solo si TERMUX_PKG_VERSION=9.1 (git grep en
+# f5c8c3d: el token tambien existe en dnsutils/build.sh, por eso el sed va
+# acotado a la ruta coreutils; otras versiones historicas de coreutils no
+# reciben el fix). El lookahead "pre_configure + CPPFLAGS FORTIFY" tambien
+# existe en m4 y tar (por eso FASE 2b ancla ademas la linea LDFLAGS
+# landroid-glob) pero este sed solo se ejecuta sobre el archivo de
+# coreutils. Idempotente: tras la 1a pasada la linea 2 del pre_configure es
+# "export CFLAGS=..." y el lookahead deja de matchear (ademas del guard
+# "! grep -qF").
+COREUTILS_BUILD_SH="$REPO_DIR/packages/coreutils/build.sh"
+if [ -f "$COREUTILS_BUILD_SH" ] \
+    && grep -qF 'TERMUX_PKG_VERSION=9.1' "$COREUTILS_BUILD_SH" \
+    && grep -qF 'termux_step_pre_configure() {' "$COREUTILS_BUILD_SH" \
+    && ! grep -qF 'export CFLAGS="$CFLAGS -std=gnu89"' "$COREUTILS_BUILD_SH"; then
+    sed -i \
+        -e '/^termux_step_pre_configure() {$/{
+N
+/^termux_step_pre_configure() {\n[[:space:]]*CPPFLAGS+=" -D__USE_FORTIFY_LEVEL=0"/s@^termux_step_pre_configure() {\n@termux_step_pre_configure() {\nexport CFLAGS="$CFLAGS -std=gnu89"\n@
+P
+D
+}' \
+        "$COREUTILS_BUILD_SH" || true
+    echo "[normalize-legacy-builds] FASE 2f: coreutils 9.1 gnu89 inyectado en termux_step_pre_configure."
+fi
+
 echo "=== [normalize-legacy-builds] Done. build.sh normalizados. ==="
