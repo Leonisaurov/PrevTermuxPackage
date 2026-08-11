@@ -150,5 +150,12 @@ termux_step_start_build() {
 }
 
 termux_step_setup_pkg_config_libdir() {
-	export TERMUX_PKG_CONFIG_LIBDIR=$TERMUX__PREFIX__LIB_DIR/pkgconfig:$TERMUX_PREFIX/share/pkgconfig
+	# Legacy compatibility: ncurses 6.3 (2021) ignora --with-pkg-config-libdir del
+	# build.sh y usa $PKG_CONFIG_LIBDIR del entorno como dir de instalacion de los
+	# .pc. La lista separada por ':' (…/pkgconfig:$TERMUX_PREFIX/share/pkgconfig)
+	# creaba un dir literal con ':' en el nombre y $TERMUX_PREFIX/lib/pkgconfig nunca
+	# se creaba -> el 'cd pkgconfig' de termux_step_post_make_install fallaba. Se fija
+	# ruta unica (como master, que usa --with-pkg-config-libdir=$TERMUX_PREFIX/lib/pkgconfig)
+	# para que el env del toolchain no gane al flag del build.sh.
+	export TERMUX_PKG_CONFIG_LIBDIR=$TERMUX__PREFIX__LIB_DIR/pkgconfig
 }
