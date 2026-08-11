@@ -44,6 +44,19 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
     # --with-pkg-config-libdir y ncurses creaba un directorio con ':' en el nombre,
     # por lo que el "cd pkgconfig" del post_make_install fallaba ("No such file or
     # directory"). Se fija la ruta única $TERMUX_PREFIX/lib/pkgconfig como hace master.
+    # ncurses 6.3 (neofetch@f5c8c3d, 2023) reintrodujo el patrón en
+    # termux_step_pre_configure (L54 TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=
+    # " --with-pkg-config-libdir=$PKG_CONFIG_LIBDIR"). El run CI 31440108354
+    # (main@50796a3, que YA contenía esta regla) falló igual: el configure recibió
+    # la lista ':' literal ("pkg-config directory: .../lib/pkgconfig:.../share/
+    # pkgconfig") y el "cd pkgconfig" del post_make_install falló ("No such file
+    # or directory"), pese a que la regla matchea localmente (GNU sed 4.9). La
+    # hipótesis es un sed silencioso/no aplicado en el árbol real del runner. Por
+    # robustez la regla se ENDURECE: 'g' (todas las ocurrencias por línea) + una
+    # variante que también cubre el valor ENTRE comillas (simple o doble). Esta
+    # variante exige comilla a AMBOS lados del $PKG_CONFIG_LIBDIR para no consumir
+    # la comilla de cierre del string de shell de la forma "+=" (un solo patrón
+    # con ["' ]* final la rompería). Ambas son idempotentes.
     # Legacy compatibility: termux-am 0.2 (2018) se compila con Gradle 4.1
     # (gradle-4.1-all.zip), que no soporta el Java 17.0.19 del runner de GitHub
     # ("Could not determine java version from '17.0.19'") y el build del paquete
@@ -170,7 +183,8 @@ find "$REPO_DIR/packages" "$REPO_DIR/root-packages" "$REPO_DIR/x11-packages" \
         -e 's|442a42d576ec72dd50f2d3faea8a664230a47bac79dc1eb6e7c9125ee76c130f|ee9d0e51295945157ecb33119cb2c79b276093d0fd342d959d78d772d505571c|g' \
         -e 's|1c9f09c119c5b24bd1934ce515e70f402b7d1b2c55f8218a16eddaa26e3f6fb0|2ac8ac8fb7646ac8d370dfc26bda2831ee951b4608d8783e9ec385a1b0ca3ff0|g' \
         -e 's|62dd49c44c399ed1b3f7f731e87a782334d834f08e098a35f2c87547d5dbb269|0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba|g' \
-        -e 's|--with-pkg-config-libdir=\$PKG_CONFIG_LIBDIR|--with-pkg-config-libdir=\$TERMUX_PREFIX/lib/pkgconfig|' \
+        -e 's|--with-pkg-config-libdir=\$PKG_CONFIG_LIBDIR|--with-pkg-config-libdir=\$TERMUX_PREFIX/lib/pkgconfig|g' \
+        -e 's|--with-pkg-config-libdir=["'\'']\$PKG_CONFIG_LIBDIR["'\'']|--with-pkg-config-libdir=\$TERMUX_PREFIX/lib/pkgconfig|g' \
         -e '/^TERMUX_PKG_DEPENDS="termux-am"$/d' \
         -e 's/termux-am-socket ([^)]*), //g' \
         -e 's/termux-am ([^)]*), //g' \
@@ -257,6 +271,12 @@ P
 D
 }' \
         "$f" || true
+
+    # Diagnóstico: si el patrón legacy sobrevive, la normalización no aplicó (el
+    # sed falló silenciosamente o el patrón difiere). Log a stderr para debug en CI.
+    grep -q -- '--with-pkg-config-libdir=$PKG_CONFIG_LIBDIR' "$f" 2>/dev/null \
+        && echo "[normalize-legacy-builds] WARN: pkg-config-libdir NO normalizado en $f" >&2 \
+        || true
 done || true
 
 # FASE 2e: bash 5.3 (commit 8ca9404, 2023) — fix gnu89 para build-tools HOST.
